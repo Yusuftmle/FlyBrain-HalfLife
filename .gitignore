@@ -1,0 +1,59 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+venv/
+ENV/
+
+# IDE and OS files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Profiling & Logs
+*.log
+*.dat
+*.prof
+*.pstats
+
+# FlyBrain Large Media, Recordings, Caches & Scratch
+recordings/
+cache/*.npz
+scratch/
+references/
+temp_*
+*.tmp
+
+# Unit test & Coverage caches
+.pytest_cache/
+.coverage
+htmlcov/

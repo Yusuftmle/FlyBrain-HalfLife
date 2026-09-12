@@ -1,0 +1,1434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlyBrain-HalfLife | MaleCNS v1.0 Live Telemetry & 3D Connectome</title>
+  <style>
+    :root {
+      --bg-dark: #06070a;
+      --panel-bg: rgba(14, 18, 28, 0.88);
+      --border-glow: #00f0ff;
+      --magenta-glow: #ff007f;
+      --green-glow: #00ff66;
+      --gold-glow: #ffb703;
+      --crimson: #ff2a55;
+      --text-main: #f1f5f9;
+      --text-dim: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg-dark);
+      color: var(--text-main);
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      background: rgba(8, 11, 20, 0.96);
+      border-bottom: 1px solid rgba(0, 240, 255, 0.2);
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8);
+      z-index: 10;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand h1 {
+      font-size: 1.2rem;
+      letter-spacing: 2px;
+      color: var(--border-glow);
+      text-transform: uppercase;
+      font-weight: 800;
+    }
+    .badge {
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: rgba(0, 255, 102, 0.15);
+      border: 1px solid var(--green-glow);
+      color: var(--green-glow);
+      font-weight: 700;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .btn-toggle {
+      background: linear-gradient(135deg, #ff0055, #ff5500);
+      color: #fff;
+      border: none;
+      padding: 8px 18px;
+      border-radius: 6px;
+      font-weight: 700;
+      font-size: 0.85rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 0 14px rgba(255, 0, 85, 0.4);
+      transition: all 0.2s ease;
+    }
+    .btn-toggle:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 0 20px rgba(255, 0, 85, 0.7);
+    }
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 18px;
+      padding: 18px 24px;
+      flex: 1;
+    }
+    @media (max-width: 1100px) {
+      .main-grid { grid-template-columns: 1fr; }
+    }
+    .video-card {
+      background: var(--panel-bg);
+      border: 1px solid rgba(0, 240, 255, 0.2);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+    }
+    .video-header {
+      padding: 12px 18px;
+      background: rgba(0, 0, 0, 0.5);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.82rem;
+      color: var(--text-dim);
+      font-weight: 600;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .btn-fullscreen {
+      background: rgba(0, 240, 255, 0.12);
+      border: 1px solid var(--border-glow);
+      color: var(--border-glow);
+      border-radius: 4px;
+      padding: 3px 9px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .btn-fullscreen:hover {
+      background: rgba(0, 240, 255, 0.3);
+      box-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+      transform: scale(1.02);
+    }
+    .video-container {
+      position: relative;
+      background: #000;
+      flex: 1;
+      min-height: 480px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .video-container img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    .action-badge-overlay {
+      position: absolute;
+      top: 18px;
+      left: 18px;
+      background: rgba(10, 14, 24, 0.85);
+      border: 1px solid var(--green-glow);
+      padding: 8px 18px;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      font-weight: 800;
+      color: var(--green-glow);
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.8);
+      backdrop-filter: blur(4px);
+    }
+    .stream-status-overlay {
+      position: absolute;
+      top: 18px;
+      right: 18px;
+      background: rgba(10, 14, 24, 0.88);
+      border: 1px solid var(--border-glow);
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: var(--border-glow);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.8);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      z-index: 10;
+    }
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .card {
+      background: var(--panel-bg);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    .card h2 {
+      font-size: 0.88rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .brain-canvas-container {
+      width: 100%;
+      height: 320px;
+      background: #020306;
+      border-radius: 8px;
+      overflow: hidden;
+      position: relative;
+      border: 1px solid rgba(0, 240, 255, 0.18);
+      cursor: grab;
+      transition: all 0.3s ease;
+    }
+    .brain-canvas-container:active {
+      cursor: grabbing;
+    }
+    .brain-canvas-container.expanded {
+      position: fixed;
+      top: 24px;
+      left: 24px;
+      right: 24px;
+      bottom: 24px;
+      width: calc(100vw - 48px);
+      height: calc(100vh - 48px);
+      z-index: 99999;
+      box-shadow: 0 0 60px rgba(0, 240, 255, 0.45);
+      border: 2px solid var(--border-glow);
+      border-radius: 12px;
+    }
+    .brain-stats-tag {
+      position: absolute;
+      bottom: 8px;
+      left: 10px;
+      font-size: 0.72rem;
+      color: var(--border-glow);
+      background: rgba(0,0,0,0.65);
+      padding: 3px 8px;
+      border-radius: 4px;
+      pointer-events: none;
+      backdrop-filter: blur(4px);
+    }
+    .brain-controls-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .btn-ctrl {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--text-dim);
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 0.70rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-ctrl:hover {
+      background: rgba(0, 240, 255, 0.2);
+      border-color: var(--border-glow);
+      color: #fff;
+    }
+    .circuit-legend-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .circuit-tag {
+      background: rgba(10, 14, 24, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 6px;
+      padding: 5px 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.67rem;
+      font-weight: 600;
+      color: var(--text-dim);
+      transition: all 0.25s ease;
+    }
+    .circuit-tag.active {
+      border-color: var(--c);
+      color: #fff;
+      background: rgba(255, 255, 255, 0.08);
+      box-shadow: 0 0 10px var(--c);
+      transform: translateY(-1px);
+    }
+    .circuit-tag .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--c);
+      display: inline-block;
+      margin-right: 4px;
+      box-shadow: 0 0 6px var(--c);
+    }
+    .circuit-tag .rate {
+      color: var(--c);
+      font-weight: 700;
+      font-family: monospace;
+    }
+    .hud-flex {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+    .retina-box {
+      width: 100px;
+      height: 100px;
+      background: #000;
+      border: 1px solid rgba(0, 240, 255, 0.3);
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .retina-box canvas {
+      width: 80px;
+      height: 80px;
+      image-rendering: pixelated;
+    }
+    .retina-label {
+      font-size: 0.65rem;
+      color: var(--text-dim);
+      margin-top: 2px;
+      text-transform: uppercase;
+    }
+    .meters-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .meter-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .meter-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+    .meter-bar-bg {
+      background: rgba(255, 255, 255, 0.08);
+      height: 8px;
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+    .meter-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 4px;
+      transition: width 0.1s ease, background 0.2s;
+    }
+    .steer-center-marker {
+      position: absolute;
+      left: 50%;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: #ffffff;
+      opacity: 0.4;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .stat-box {
+      background: rgba(0, 0, 0, 0.35);
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      text-align: center;
+    }
+    .stat-value {
+      font-size: 1.25rem;
+      font-weight: 800;
+      color: var(--border-glow);
+    }
+    .stat-title {
+      font-size: 0.66rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+  </style>
+  <!-- Three.js WebGL Engine -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>🪰 FlyBrain-HalfLife</h1>
+      <span class="badge" id="status-badge">LIVE IN SILICO</span>
+    </div>
+    <div class="header-actions">
+      <button class="btn-toggle" id="btn-toggle-sound" onclick="toggleSound()" style="background: rgba(0, 240, 255, 0.12); border: 1px solid var(--border-glow); color: var(--border-glow); box-shadow: 0 0 10px rgba(0, 240, 255, 0.2); cursor: pointer;">
+        <span id="sound-icon">🔇</span>
+        <span id="sound-text">SES: KAPALI</span>
+      </button>
+      <button class="btn-toggle" id="btn-toggle-pause" onclick="togglePause()">
+        <span id="btn-icon">⏸️</span>
+        <span id="btn-text">DURDUR (F10)</span>
+      </button>
+      <div style="font-size: 0.82rem; color: var(--text-dim);">
+        MaleCNS v1.0 • <b>CUDA GPU</b> • <b>0.85 DECAY</b>
+      </div>
+    </div>
+  </header>
+
+  <div class="main-grid">
+    <!-- LEFT PANE: Wide Half-Life Viewport -->
+    <div class="video-card">
+      <div class="video-header">
+        <span>GOLDSRC 3D VIEWPORT (TPS AGENT STREAM)</span>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span id="fps-label">FPS: --</span>
+          <button class="btn-fullscreen" onclick="toggleFullscreen()" title="Tam Ekran Aç / Kapat">⛶ TAM EKRAN</button>
+        </div>
+      </div>
+      <div class="video-container">
+        <img id="live-stream-img" src="/stream" alt="Live FlyBrain Viewport Stream" />
+        <div class="stream-status-overlay" id="stream-status-overlay">● CANLI YAYIN AKTİF</div>
+        <div class="action-badge-overlay" id="action-badge">FORWARD</div>
+      </div>
+    </div>
+
+    <!-- RIGHT PANE: 3D Connectome + Gauges -->
+    <div class="sidebar">
+      <!-- RIGHT-TOP: MaleCNS 3D WebGL Connectome Mesh with Action Circuits -->
+      <div class="card" style="padding: 12px;">
+        <h2>
+          <span>3D Nöron Ağı (MaleCNS Connectome)</span>
+          <span style="color: var(--border-glow); font-size: 0.72rem;">ACTION-COUPLED 3D</span>
+        </h2>
+        <div class="brain-canvas-container" id="brain-3d-container">
+          <div class="brain-stats-tag" id="brain-stats-tag">Neurons: Loading 3D Mesh...</div>
+        </div>
+        <div class="brain-controls-bar">
+          <button class="btn-ctrl" id="btn-autorotate" onclick="toggleAutoRotate()">🔄 OTO-DÖNDÜR: AÇIK</button>
+          <button class="btn-ctrl" onclick="resetBrainCamera()">🎯 MERKEZE AL</button>
+          <button class="btn-ctrl" id="btn-expand-brain" onclick="toggleBrainExpanded()">⛶ GENİŞLET</button>
+        </div>
+        <div class="circuit-legend-grid">
+          <div class="circuit-tag" id="tag-retina" style="--c: #00f0ff;">
+            <span><span class="dot"></span>RETINA</span>
+            <span class="rate" id="rate-retina">0.0%</span>
+          </div>
+          <div class="circuit-tag" id="tag-optic" style="--c: #b026ff;">
+            <span><span class="dot"></span>OPTİK LOB</span>
+            <span class="rate" id="rate-optic">0.0%</span>
+          </div>
+          <div class="circuit-tag" id="tag-cx" style="--c: #ffb703;">
+            <span><span class="dot"></span>MERKEZ PUSULA</span>
+            <span class="rate" id="rate-cx">0.0%</span>
+          </div>
+          <div class="circuit-tag" id="tag-mb" style="--c: #00ff66;">
+            <span><span class="dot"></span>MANTAR GÖVDE</span>
+            <span class="rate" id="rate-mb">0.0%</span>
+          </div>
+          <div class="circuit-tag" id="tag-motor" style="--c: #ffffff;">
+            <span><span class="dot"></span>MOTOR OMURİLİK</span>
+            <span class="rate" id="rate-motor">0.0%</span>
+          </div>
+          <div class="circuit-tag" id="tag-da" style="--c: #ff0055;">
+            <span><span class="dot"></span>DOPAMİN PPL1</span>
+            <span class="rate" id="rate-da">0.0%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT-BOTTOM: Telemetry Gauges & Retina Box -->
+      <div class="card">
+        <h2>
+          <span>Canlı Motor Sinyalleri & Retina</span>
+          <span style="color: var(--text-dim); font-size: 0.72rem;">PREMOTOR BCI</span>
+        </h2>
+
+        <div class="hud-flex">
+          <!-- 60x60 Retina Ommatidia Viewport -->
+          <div class="retina-box">
+            <canvas id="retina-canvas" width="60" height="60"></canvas>
+            <span class="retina-label">Retina 60x60</span>
+          </div>
+
+          <!-- Gauges Column -->
+          <div class="meters-col">
+            <!-- DNp20 Steering -->
+            <div class="meter-row">
+              <div class="meter-label">
+                <span>DNp20 Steering (A / D)</span>
+                <span id="steer-val" style="color: var(--border-glow);">0.000</span>
+              </div>
+              <div class="meter-bar-bg">
+                <div class="steer-center-marker"></div>
+                <div class="meter-fill" id="steer-bar" style="background: var(--border-glow);"></div>
+              </div>
+            </div>
+
+            <!-- DNpe017 Forward Walking -->
+            <div class="meter-row">
+              <div class="meter-label">
+                <span>DNpe017 Forward Walk (W)</span>
+                <span id="fwd-val" style="color: var(--green-glow);">0.000</span>
+              </div>
+              <div class="meter-bar-bg">
+                <div class="meter-fill" id="fwd-bar" style="background: var(--green-glow);"></div>
+              </div>
+            </div>
+
+            <!-- MDN Moonwalker Backward Walking -->
+            <div class="meter-row">
+              <div class="meter-label">
+                <span>MDN Moonwalker Backward (S)</span>
+                <span id="bwd-val" style="color: #ff9900;">0.000</span>
+              </div>
+              <div class="meter-bar-bg">
+                <div class="meter-fill" id="bwd-bar" style="background: #ff9900;"></div>
+              </div>
+            </div>
+
+            <!-- PPL1 Dopamine -->
+            <div class="meter-row">
+              <div class="meter-label">
+                <span>PPL1 Dopamine Signal</span>
+                <span id="da-val" style="color: var(--gold-glow);">0.00</span>
+              </div>
+              <div class="meter-bar-bg">
+                <div class="steer-center-marker"></div>
+                <div class="meter-fill" id="da-bar" style="background: var(--gold-glow);"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Mini Stats Grid -->
+        <div class="stats-grid">
+          <div class="stat-box">
+            <div class="stat-value" id="spikes-val">0</div>
+            <div class="stat-title">Active Spikes</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="synapses-val">428k</div>
+            <div class="stat-title">Synapses</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="learning-status" style="color: var(--green-glow);">ACTIVE</div>
+            <div class="stat-title">STDP Plasticity</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="sugar-status" style="color: var(--gold-glow);">IDLE</div>
+            <div class="stat-title">LB3c Sugar</div>
+          </div>
+        </div>
+
+        <!-- Real-Time Spike Raster Plot (128 Neurons / Biological EEG) -->
+        <div style="margin-top: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(0, 240, 255, 0.18); border-radius: 8px; padding: 10px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <span style="font-size: 0.76rem; font-weight: 700; color: var(--border-glow); text-transform: uppercase; letter-spacing: 1px;">
+              ⚡ Canlı EEG / 128-Nöron Spike Raster
+            </span>
+            <span style="font-size: 0.65rem; color: var(--text-dim);">
+              128 SAMPLED • 0.85 DECAY
+            </span>
+          </div>
+          <canvas id="raster-canvas" width="380" height="90" style="width: 100%; height: 90px; background: #04060a; border-radius: 4px; display: block;"></canvas>
+          <div style="display: flex; justify-content: space-between; font-size: 0.62rem; color: var(--text-dim); margin-top: 5px;">
+            <span style="color: #00f0ff;">■ Ret (16)</span>
+            <span style="color: #b026ff;">■ Opt (32)</span>
+            <span style="color: #ffb703;">■ CX (32)</span>
+            <span style="color: #00ff66;">■ MB (32)</span>
+            <span style="color: #ffffff;">■ DN (16)</span>
+            <span>T-10s ➔ NOW</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // --- 1. THREE.JS 3D MaleCNS CONNECTOME WEBGL VISUALIZER ---
+    let scene, camera, renderer, pointsGeometry, pointsMaterial, pointCloud;
+    let neuronPositions = [];
+    let neuronBaseColors = [];
+    let neuronRegions = [];
+    let brightness = [];
+    let neuronCount = 0;
+    let isDragging = false;
+    let previousMousePosition = { x: 0, y: 0 };
+    let autoRotate = true;
+    let isBrainExpanded = false;
+
+    // Biological Action-Coupled Circuit State
+    let circuitState = {
+      turn_diff: 0.0,
+      forward_rate: 0.0,
+      attack_rate: 0.0,
+      is_firing: false,
+      is_escaping: false,
+      is_damage: false,
+      dopamine: 0.0
+    };
+
+    // Synaptic Highway Axon Curves & Traveling Action Potential Pulses
+    let axonLinesGroup = null;
+    let tractCurves = [];
+    let pulseParticles = null;
+    let pulseProgress = [];
+
+    function createNeuronGlowTexture() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64;
+      canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0.0, 'rgba(255, 255, 255, 1.0)');
+      grad.addColorStop(0.18, 'rgba(255, 255, 255, 0.95)');
+      grad.addColorStop(0.42, 'rgba(255, 255, 255, 0.52)');
+      grad.addColorStop(0.72, 'rgba(255, 255, 255, 0.16)');
+      grad.addColorStop(1.0, 'rgba(255, 255, 255, 0.0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 64, 64);
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      return tex;
+    }
+
+    function init3DBrain() {
+      const container = document.getElementById('brain-3d-container');
+      const w = container.clientWidth || 400;
+      const h = container.clientHeight || 320;
+
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x020306);
+
+      camera = new THREE.PerspectiveCamera(40, w / h, 1, 1200);
+      camera.position.set(0, 25, 380);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(w, h);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      container.appendChild(renderer.domElement);
+
+      // Mouse drag rotation controls with damping
+      renderer.domElement.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        previousMousePosition = { x: e.clientX, y: e.clientY };
+      });
+      window.addEventListener('mouseup', () => { isDragging = false; });
+      window.addEventListener('mousemove', (e) => {
+        if (!isDragging || !pointCloud) return;
+        const deltaX = e.clientX - previousMousePosition.x;
+        const deltaY = e.clientY - previousMousePosition.y;
+        pointCloud.rotation.y += deltaX * 0.008;
+        pointCloud.rotation.x += deltaY * 0.008;
+        if (axonLinesGroup) {
+          axonLinesGroup.rotation.y = pointCloud.rotation.y;
+          axonLinesGroup.rotation.x = pointCloud.rotation.x;
+        }
+        previousMousePosition = { x: e.clientX, y: e.clientY };
+      });
+
+      // Scroll wheel zoom
+      renderer.domElement.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        camera.position.z = Math.max(100, Math.min(600, camera.position.z + e.deltaY * 0.3));
+      }, { passive: false });
+
+      // Resize listener
+      window.addEventListener('resize', onWindowResize);
+
+      // Fetch 3D coordinates & construct synaptic highways
+      fetchCoords();
+
+      // Render loop
+      animate3DBrain();
+    }
+
+    function onWindowResize() {
+      const container = document.getElementById('brain-3d-container');
+      if (!container || !renderer || !camera) return;
+      const w = container.clientWidth || 400;
+      const h = container.clientHeight || 320;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }
+
+    function buildSynapticAxonTracts() {
+      if (axonLinesGroup) scene.remove(axonLinesGroup);
+      axonLinesGroup = new THREE.Group();
+
+      // 3D Biological Tracts linking major neuropil hubs (MaleCNS Coordinates)
+      const tracts = [
+        // 0: Left Retina -> Left Optic Lobe
+        [new THREE.Vector3(-200, 0, 80), new THREE.Vector3(-180, 0, 45), new THREE.Vector3(-160, 0, 10)],
+        // 1: Right Retina -> Right Optic Lobe
+        [new THREE.Vector3(200, 0, 80), new THREE.Vector3(180, 0, 45), new THREE.Vector3(160, 0, 10)],
+        // 2: Left Optic Lobe -> Central Complex (Heading integration)
+        [new THREE.Vector3(-160, 0, 10), new THREE.Vector3(-80, 5, 20), new THREE.Vector3(0, 0, 30)],
+        // 3: Right Optic Lobe -> Central Complex
+        [new THREE.Vector3(160, 0, 10), new THREE.Vector3(80, 5, 20), new THREE.Vector3(0, 0, 30)],
+        // 4: Central Complex -> Left Mushroom Body Calyx
+        [new THREE.Vector3(0, 0, 30), new THREE.Vector3(-35, -30, 38), new THREE.Vector3(-75, -60, 45)],
+        // 5: Central Complex -> Right Mushroom Body Calyx
+        [new THREE.Vector3(0, 0, 30), new THREE.Vector3(35, -30, 38), new THREE.Vector3(75, -60, 45)],
+        // 6: Central Complex -> Descending Motor Column -> VNC
+        [new THREE.Vector3(0, 0, 30), new THREE.Vector3(0, 20, -20), new THREE.Vector3(0, 40, -70), new THREE.Vector3(0, 50, -110)],
+        // 7: Left Mushroom Body -> MBONs -> PPL1 Dopaminergic
+        [new THREE.Vector3(-75, -60, 45), new THREE.Vector3(-35, -40, 30), new THREE.Vector3(0, -20, 15), new THREE.Vector3(0, -80, 50)],
+        // 8: Right Mushroom Body -> MBONs -> PPL1 Dopaminergic
+        [new THREE.Vector3(75, -60, 45), new THREE.Vector3(35, -40, 30), new THREE.Vector3(0, -20, 15), new THREE.Vector3(0, -80, 50)]
+      ];
+
+      const tractColors = [
+        0x00f0ff, 0x00f0ff, 0x00e5ff, 0x00e5ff, 0x00ff66, 0x00ff66, 0xffffff, 0xff0055, 0xff0055
+      ];
+
+      tractCurves = [];
+      tracts.forEach((pts, idx) => {
+        const curve = new THREE.CatmullRomCurve3(pts);
+        tractCurves.push(curve);
+        const geom = new THREE.BufferGeometry().setFromPoints(curve.getPoints(40));
+        const mat = new THREE.LineBasicMaterial({
+          color: tractColors[idx],
+          transparent: true,
+          opacity: 0.36,
+          blending: THREE.AdditiveBlending
+        });
+        const line = new THREE.Line(geom, mat);
+        axonLinesGroup.add(line);
+      });
+
+      // 2 traveling action potential pulses per tract for continuous biological signal flow
+      const totalPulses = tractCurves.length * 2;
+      const pulseGeom = new THREE.BufferGeometry();
+      const pulsePos = new Float32Array(totalPulses * 3);
+      const pulseCol = new Float32Array(totalPulses * 3);
+      pulseProgress = new Float32Array(totalPulses);
+
+      for (let i = 0; i < totalPulses; i++) {
+        const tractIdx = Math.floor(i / 2);
+        const subIdx = i % 2;
+        pulseProgress[i] = (subIdx * 0.5 + Math.random() * 0.4) % 1.0;
+        const p = tractCurves[tractIdx].getPointAt(pulseProgress[i]);
+        pulsePos[i * 3 + 0] = p.x;
+        pulsePos[i * 3 + 1] = p.y;
+        pulsePos[i * 3 + 2] = p.z;
+
+        const c = new THREE.Color(tractColors[tractIdx]);
+        pulseCol[i * 3 + 0] = c.r;
+        pulseCol[i * 3 + 1] = c.g;
+        pulseCol[i * 3 + 2] = c.b;
+      }
+      pulseGeom.setAttribute('position', new THREE.BufferAttribute(pulsePos, 3));
+      pulseGeom.setAttribute('color', new THREE.BufferAttribute(pulseCol, 3));
+
+      const pulseMat = new THREE.PointsMaterial({
+        size: 9.0,
+        map: createNeuronGlowTexture(),
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        vertexColors: true,
+        depthWrite: false
+      });
+      pulseParticles = new THREE.Points(pulseGeom, pulseMat);
+      axonLinesGroup.add(pulseParticles);
+
+      scene.add(axonLinesGroup);
+    }
+
+    async function fetchCoords() {
+      try {
+        const res = await fetch('/connectome_coords');
+        const data = await res.json();
+        if (!data.positions || data.positions.length === 0) return;
+
+        neuronCount = data.positions.length;
+        brightness = new Float32Array(neuronCount);
+        neuronRegions = new Uint8Array(neuronCount);
+        
+        const posArray = new Float32Array(neuronCount * 3);
+        const colArray = new Float32Array(neuronCount * 3);
+        neuronBaseColors = new Float32Array(neuronCount * 3);
+        neuronPositions = new Float32Array(neuronCount * 3);
+
+        // Curated Biological Neuropil Palette (R, G, B)
+        const palette = [
+          [0.0, 0.94, 1.0],   // 0: Photoreceptors (Bioluminescent Cyan)
+          [0.72, 0.15, 1.0],  // 1: Optic Lobe Medulla/Lobula (Deep Violet)
+          [1.0, 0.72, 0.05],  // 2: Central Complex Steering Compass (Radiant Gold)
+          [0.0, 1.0, 0.42],   // 3: Mushroom Body Kenyon Cells (Neon Emerald)
+          [0.0, 0.85, 0.95],  // 4: MBON Output Nodes (Electric Turquoise)
+          [1.0, 0.05, 0.35],  // 5: PPL1 Dopaminergic Hub (Crimson Ruby)
+          [1.0, 1.0, 1.0]     // 6: Descending Motor Column (Pure Hot White)
+        ];
+
+        for (let i = 0; i < neuronCount; i++) {
+          const x = data.positions[i][0];
+          const y = data.positions[i][1];
+          const z = data.positions[i][2];
+
+          posArray[i * 3 + 0] = x;
+          posArray[i * 3 + 1] = y;
+          posArray[i * 3 + 2] = z;
+
+          neuronPositions[i * 3 + 0] = x;
+          neuronPositions[i * 3 + 1] = y;
+          neuronPositions[i * 3 + 2] = z;
+
+          const reg = (data.regions && data.regions[i] !== undefined) ? data.regions[i] : 0;
+          neuronRegions[i] = reg;
+          const c = palette[reg % palette.length];
+          
+          neuronBaseColors[i * 3 + 0] = c[0];
+          neuronBaseColors[i * 3 + 1] = c[1];
+          neuronBaseColors[i * 3 + 2] = c[2];
+
+          colArray[i * 3 + 0] = c[0] * 0.22;
+          colArray[i * 3 + 1] = c[1] * 0.22;
+          colArray[i * 3 + 2] = c[2] * 0.22;
+        }
+
+        pointsGeometry = new THREE.BufferGeometry();
+        pointsGeometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+        pointsGeometry.setAttribute('color', new THREE.BufferAttribute(colArray, 3));
+
+        // High-Quality Bioluminescent Particle Material with Additive Glow
+        pointsMaterial = new THREE.PointsMaterial({
+          size: 5.2,
+          map: createNeuronGlowTexture(),
+          vertexColors: true,
+          transparent: true,
+          opacity: 0.95,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false
+        });
+
+        pointCloud = new THREE.Points(pointsGeometry, pointsMaterial);
+        scene.add(pointCloud);
+
+        // Build glowing axon splines
+        buildSynapticAxonTracts();
+
+        document.getElementById('brain-stats-tag').innerText = `Neurons: ${neuronCount.toLocaleString()} | Action-Coupled Connectome Active`;
+      } catch (e) {
+        console.warn("Could not load 3D coords:", e);
+      }
+    }
+
+    function animate3DBrain() {
+      requestAnimationFrame(animate3DBrain);
+      const time = performance.now() * 0.001;
+
+      // 1. Smooth Rotation
+      if (pointCloud && !isDragging && autoRotate) {
+        pointCloud.rotation.y += 0.004;
+        if (axonLinesGroup) {
+          axonLinesGroup.rotation.y = pointCloud.rotation.y;
+          axonLinesGroup.rotation.x = pointCloud.rotation.x;
+        }
+      }
+
+      // 2. Action-Coupled Synaptic Pulses along Axon Tracts
+      if (pulseParticles && tractCurves.length > 0) {
+        const pulsePos = pulseParticles.geometry.attributes.position.array;
+        const pulseCol = pulseParticles.geometry.attributes.color.array;
+        const totalPulses = pulseProgress.length;
+        
+        // Base pulse speed + acceleration on forward walking / firing
+        const speedBoost = 0.007 + Math.max(0, circuitState.forward_rate) * 0.025 + (circuitState.is_firing ? 0.05 : 0);
+        
+        for (let i = 0; i < totalPulses; i++) {
+          const tractIdx = Math.floor(i / 2);
+          pulseProgress[i] = (pulseProgress[i] + speedBoost) % 1.0;
+          const pt = tractCurves[tractIdx].getPointAt(pulseProgress[i]);
+          pulsePos[i * 3 + 0] = pt.x;
+          pulsePos[i * 3 + 1] = pt.y;
+          pulsePos[i * 3 + 2] = pt.z;
+
+          // Pulse color based on biological state
+          if (circuitState.is_firing) {
+            pulseCol[i * 3 + 0] = 1.0; pulseCol[i * 3 + 1] = 1.0; pulseCol[i * 3 + 2] = 1.0; // Flash white
+          } else if (circuitState.is_damage) {
+            pulseCol[i * 3 + 0] = 1.0; pulseCol[i * 3 + 1] = 0.1; pulseCol[i * 3 + 2] = 0.25; // Flash crimson
+          } else {
+            const tractColor = axonLinesGroup.children[tractIdx]?.material?.color;
+            if (tractColor) {
+              pulseCol[i * 3 + 0] = tractColor.r;
+              pulseCol[i * 3 + 1] = tractColor.g;
+              pulseCol[i * 3 + 2] = tractColor.b;
+            }
+          }
+        }
+        pulseParticles.geometry.attributes.position.needsUpdate = true;
+        pulseParticles.geometry.attributes.color.needsUpdate = true;
+      }
+
+      // 3. Dynamic Biological Neuropil Waves Driven by Real Actions
+      if (pointCloud && pointsGeometry && neuronCount > 0) {
+        const colors = pointsGeometry.attributes.color.array;
+        const turn = circuitState.turn_diff;
+        const fwd = circuitState.forward_rate;
+        const isFiring = circuitState.is_firing;
+        const isDmg = circuitState.is_damage;
+        const da = circuitState.dopamine;
+
+        for (let i = 0; i < neuronCount; i++) {
+          // Exponential Calcium Decay:
+          brightness[i] *= 0.88;
+          let b = brightness[i];
+
+          const reg = neuronRegions[i];
+          const x = neuronPositions[i * 3 + 0];
+          const y = neuronPositions[i * 3 + 1];
+          const z = neuronPositions[i * 3 + 2];
+
+          // ACTION DYNAMICS:
+          // A) STEERING (Retina, Optic Lobe & Central Complex): Asymmetric Hemifield Illumination
+          if (reg === 0 || reg === 1 || reg === 2) {
+            if (turn < -0.03 && x < 0) {
+              // Left Turn (A key): Excites Left Hemisphere with sweeping wave
+              const steerWave = Math.sin(time * 12.0 + x * 0.06) * 0.5 + 0.5;
+              b = Math.max(b, Math.min(1.0, Math.abs(turn) * 3.0 * steerWave));
+            } else if (turn > 0.03 && x > 0) {
+              // Right Turn (D key): Excites Right Hemisphere with sweeping wave
+              const steerWave = Math.sin(time * 12.0 - x * 0.06) * 0.5 + 0.5;
+              b = Math.max(b, Math.min(1.0, Math.abs(turn) * 3.0 * steerWave));
+            }
+          }
+
+          // B) FORWARD WALKING (Descending Motor Column & Central Complex): Rhythmic CPG Wave
+          if ((reg === 6 || reg === 2) && fwd > 0.04) {
+            const locoWave = Math.sin(z * 0.08 - time * 16.0) * 0.5 + 0.5;
+            b = Math.max(b, locoWave * Math.min(1.0, fwd * 2.5 + 0.25));
+          }
+
+          // C) ATTACK / FIRING: Explosive Detonation in Motor Core + Radial Shockwave
+          if (isFiring) {
+            if (reg === 6 || reg === 2) {
+              b = 1.0;
+            } else {
+              const dist = Math.sqrt(x * x + y * y + (z - 30) * (z - 30));
+              const shock = Math.sin(dist * 0.1 - time * 24.0);
+              if (shock > 0.65) b = Math.max(b, 0.85);
+            }
+          }
+
+          // D) INCOMING DAMAGE: Full Connectome Crimson Alarm Wave
+          if (isDmg) {
+            b = Math.max(b, 0.95);
+          }
+
+          // E) DOPAMINE PLASTICITY (Mushroom Body & PPL1): Warm Golden Halos
+          if ((reg === 3 || reg === 5) && da > 0.15) {
+            b = Math.max(b, Math.min(0.95, da * 1.8));
+          }
+
+          const r0 = neuronBaseColors[i * 3 + 0];
+          const g0 = neuronBaseColors[i * 3 + 1];
+          const b0 = neuronBaseColors[i * 3 + 2];
+
+          // Subdued baseline to radiant explosive peak
+          if (isDmg) {
+            colors[i * 3 + 0] = Math.min(1.0, 0.35 + b * 0.85);
+            colors[i * 3 + 1] = Math.max(0.0, 0.08 - b * 0.08);
+            colors[i * 3 + 2] = Math.max(0.0, 0.12 - b * 0.10);
+          } else if (isFiring && (reg === 6 || reg === 2)) {
+            colors[i * 3 + 0] = Math.min(1.0, r0 * 0.35 + b * 0.95);
+            colors[i * 3 + 1] = Math.min(1.0, g0 * 0.35 + b * 0.95);
+            colors[i * 3 + 2] = Math.min(1.0, b0 * 0.35 + b * 1.0);
+          } else {
+            colors[i * 3 + 0] = r0 * 0.22 + (b * r0 * 1.6);
+            colors[i * 3 + 1] = g0 * 0.22 + (b * g0 * 1.6);
+            colors[i * 3 + 2] = b0 * 0.22 + (b * b0 * 1.6);
+          }
+        }
+        pointsGeometry.attributes.color.needsUpdate = true;
+      }
+
+      if (renderer && scene && camera) {
+        renderer.render(scene, camera);
+      }
+    }
+
+    function toggleAutoRotate() {
+      autoRotate = !autoRotate;
+      const btn = document.getElementById('btn-autorotate');
+      if (btn) btn.innerText = autoRotate ? '🔄 OTO-DÖNDÜR: AÇIK' : '⏸️ OTO-DÖNDÜR: KAPALI';
+    }
+
+    function resetBrainCamera() {
+      if (!camera || !pointCloud) return;
+      camera.position.set(0, 25, 380);
+      pointCloud.rotation.set(0, 0, 0);
+      if (axonLinesGroup) axonLinesGroup.rotation.set(0, 0, 0);
+    }
+
+    function toggleBrainExpanded() {
+      const container = document.getElementById('brain-3d-container');
+      const btn = document.getElementById('btn-expand-brain');
+      if (!container) return;
+      isBrainExpanded = !isBrainExpanded;
+      if (isBrainExpanded) {
+        container.classList.add('expanded');
+        if (btn) btn.innerText = '✕ KÜÇÜLT';
+      } else {
+        container.classList.remove('expanded');
+        if (btn) btn.innerText = '⛶ GENİŞLET';
+      }
+      setTimeout(onWindowResize, 50);
+    }
+
+    // --- 2. LIVE TELEMETRY STREAM & GAUGES SYNC ---
+    const retinaCtx = document.getElementById('retina-canvas').getContext('2d');
+    const rasterCanvas = document.getElementById('raster-canvas');
+    const rasterCtx = rasterCanvas ? rasterCanvas.getContext('2d') : null;
+
+    function updateRasterPlot(raster) {
+      if (!rasterCtx || !rasterCanvas) return;
+      const w = rasterCanvas.width;
+      const h = rasterCanvas.height;
+
+      rasterCtx.drawImage(rasterCanvas, -2, 0);
+      rasterCtx.fillStyle = '#04060a';
+      rasterCtx.fillRect(w - 2, 0, 2, h);
+
+      const n = raster.length;
+      for (let i = 0; i < n; i++) {
+        if (raster[i] > 0) {
+          let col = '#ffffff';
+          if (i < 16) col = '#00f0ff';
+          else if (i < 48) col = '#b026ff';
+          else if (i < 80) col = '#ffb703';
+          else if (i < 112) col = '#00ff66';
+
+          const y = Math.floor((i / n) * h);
+          rasterCtx.fillStyle = col;
+          rasterCtx.fillRect(w - 2, y, 2, 1);
+        }
+      }
+    }
+
+    async function updateTelemetry() {
+      try {
+        const res = await fetch('/state');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // 1. Update FPS
+        if (data.fps) document.getElementById('fps-label').innerText = 'FPS: ' + data.fps.toFixed(1);
+
+        // 2. Update Clean Single-Word Action Badge
+        const badgeEl = document.getElementById('action-badge');
+        let actionRaw = (data.action || 'IDLE').toUpperCase();
+        let badgeWord = 'IDLE';
+        let badgeColor = '#94a3b8';
+
+        if (data.is_paused || actionRaw.includes('PAUSED')) {
+          badgeWord = 'PAUSED';
+          badgeColor = '#ffb703';
+        } else if (actionRaw.includes('ESCAPE') || actionRaw.includes('REVERSAL')) {
+          badgeWord = 'ESCAPE';
+          badgeColor = '#ff2a55';
+        } else if (actionRaw.includes('PANIC') || actionRaw.includes('STUCK')) {
+          badgeWord = 'STUCK (PANIC)';
+          badgeColor = '#ff5500';
+        } else if (actionRaw.includes('BACKWARD') || actionRaw.includes('REVERSE') || actionRaw.includes('MOONWALK')) {
+          badgeWord = 'BACKWARD (MDN)';
+          badgeColor = '#ff9900';
+        } else if (actionRaw.includes('FIRE') || actionRaw.includes('CLICK')) {
+          badgeWord = 'FIRE';
+          badgeColor = '#ff0055';
+        } else if (actionRaw.includes('STEER LEFT') || actionRaw.includes('LEFT')) {
+          badgeWord = 'STEER LEFT';
+          badgeColor = '#00f0ff';
+        } else if (actionRaw.includes('STEER RIGHT') || actionRaw.includes('RIGHT')) {
+          badgeWord = 'STEER RIGHT';
+          badgeColor = '#00f0ff';
+        } else if (actionRaw.includes('FORWARD') || actionRaw.includes('WALK')) {
+          badgeWord = 'FORWARD';
+          badgeColor = '#00ff66';
+        } else if (actionRaw.includes('OBSERVING') || actionRaw.includes('PAUSE')) {
+          badgeWord = 'OBSERVING';
+          badgeColor = '#94a3b8';
+        }
+
+        badgeEl.innerText = badgeWord;
+        badgeEl.style.borderColor = badgeColor;
+        badgeEl.style.color = badgeColor;
+
+        // 3. Status Badge in Header
+        const statusBadge = document.getElementById('status-badge');
+        if (statusBadge) {
+          statusBadge.innerText = data.status || 'LIVE IN SILICO';
+          if (data.is_paused) {
+            statusBadge.style.borderColor = '#ffb703';
+            statusBadge.style.color = '#ffb703';
+            statusBadge.style.background = 'rgba(255, 183, 3, 0.15)';
+          } else {
+            statusBadge.style.borderColor = '#00ff66';
+            statusBadge.style.color = '#00ff66';
+            statusBadge.style.background = 'rgba(0, 255, 102, 0.15)';
+          }
+        }
+
+        // 4. Update Stop/Resume Button
+        if (data.is_paused !== undefined) {
+          updatePauseButton(data.is_paused);
+        }
+
+        // 5. Update Motor Meters
+        const fwd = data.forward_rate || 0.0;
+        document.getElementById('fwd-val').innerText = fwd.toFixed(3);
+        document.getElementById('fwd-bar').style.width = Math.min(100, Math.max(0, fwd * 250)) + '%';
+
+        const bwd = data.backward_rate || (data.circuits && data.circuits.backward_rate) || 0.0;
+        const bwdEl = document.getElementById('bwd-val');
+        const bwdBar = document.getElementById('bwd-bar');
+        if (bwdEl) bwdEl.innerText = bwd.toFixed(3);
+        if (bwdBar) bwdBar.style.width = Math.min(100, Math.max(0, bwd * 250)) + '%';
+
+        const steer = data.turn_diff || 0.0;
+        document.getElementById('steer-val').innerText = (steer >= 0 ? '+' : '') + steer.toFixed(3);
+        const steerPct = 50 + (steer * 200);
+        document.getElementById('steer-bar').style.width = Math.min(100, Math.max(0, steerPct)) + '%';
+
+        const da = data.dopamine || 0.0;
+        document.getElementById('da-val').innerText = (da >= 0 ? '+' : '') + da.toFixed(2);
+        const daPct = 50 + (da * 15);
+        document.getElementById('da-bar').style.width = Math.min(100, Math.max(0, daPct)) + '%';
+
+        if (data.spikes !== undefined) document.getElementById('spikes-val').innerText = data.spikes;
+
+        // 6. Real-Time 128-Neuron Spike Raster (EEG Waves) & Audio Sonification
+        if (data.raster && Array.isArray(data.raster) && data.raster.length > 0) {
+          updateRasterPlot(data.raster);
+          const activeSpikeCount = data.raster.reduce((acc, v) => acc + (v > 0 ? 1 : 0), 0);
+          if (activeSpikeCount > 0) {
+            playSpikeCrackle(activeSpikeCount);
+          }
+        }
+
+        if (data.action && (data.action.includes('FIRE') || data.action.includes('ATTACK'))) {
+          playTone(280, 0.05, 'sawtooth');
+        } else if (data.circuits && data.circuits.is_damage) {
+          playTone(150, 0.15, 'square');
+        }
+
+        // 6. Biological Action-Coupled Circuit State & Badges
+        if (data.circuits) {
+          circuitState.turn_diff = Number(data.circuits.turn_diff !== undefined ? data.circuits.turn_diff : (data.turn_diff || 0.0));
+          circuitState.forward_rate = Number(data.circuits.forward_rate !== undefined ? data.circuits.forward_rate : (data.forward_rate || 0.0));
+          circuitState.attack_rate = Number(data.circuits.attack_rate || 0.0);
+          circuitState.is_firing = Boolean(data.circuits.is_firing || (data.action && data.action.includes('FIRE')));
+          circuitState.is_escaping = Boolean(data.circuits.is_escaping);
+          circuitState.is_damage = Boolean(data.circuits.is_damage);
+          circuitState.dopamine = Number(data.circuits.dopamine !== undefined ? data.circuits.dopamine / 100.0 : (data.dopamine || 0.0));
+
+          const updateCircuitBadge = (tagId, rateId, val, activeThreshold = 0.5) => {
+            const num = Number(val || 0);
+            const rateEl = document.getElementById(rateId);
+            const tagEl = document.getElementById(tagId);
+            if (rateEl) rateEl.innerText = num.toFixed(1) + '%';
+            if (tagEl) {
+              if (num > activeThreshold) {
+                tagEl.classList.add('active');
+              } else {
+                tagEl.classList.remove('active');
+              }
+            }
+          };
+
+          updateCircuitBadge('tag-retina', 'rate-retina', data.circuits.retina, 1.0);
+          updateCircuitBadge('tag-optic', 'rate-optic', data.circuits.optic_lobe, 0.5);
+          updateCircuitBadge('tag-cx', 'rate-cx', data.circuits.central_complex, 0.3);
+          updateCircuitBadge('tag-mb', 'rate-mb', data.circuits.mushroom_body, 0.2);
+          updateCircuitBadge('tag-motor', 'rate-motor', data.circuits.descending, 0.1);
+          updateCircuitBadge('tag-da', 'rate-da', data.circuits.dopamine, 5.0);
+        } else {
+          circuitState.turn_diff = Number(data.turn_diff || 0.0);
+          circuitState.forward_rate = Number(data.forward_rate || 0.0);
+          circuitState.is_firing = Boolean(data.action && data.action.includes('FIRE'));
+          circuitState.dopamine = Number(data.dopamine || 0.0);
+        }
+
+        // 7. Flash Active Biological Spikes in 3D WebGL Point Cloud
+        if (data.active_spikes && Array.isArray(data.active_spikes) && brightness.length > 0) {
+          data.active_spikes.forEach(idx => {
+            if (idx < brightness.length) {
+              brightness[idx] = 1.0; // Flash spike!
+            }
+          });
+        }
+
+        // 8. Render Retina Ommatidia Canvas
+        drawRetinaSample(fwd, steer, da);
+
+      } catch (e) {
+        // Routine poll handler
+      }
+    }
+
+    function drawRetinaSample(fwd, steer, da) {
+      const imgData = retinaCtx.createImageData(60, 60);
+      const d = imgData.data;
+      const t = Date.now() * 0.003;
+      for (let y = 0; y < 60; y++) {
+        for (let x = 0; x < 60; x++) {
+          const idx = (y * 60 + x) * 4;
+          // Subdued motion-sensitive ommatidia pattern
+          const lum = Math.sin(x * 0.15 + steer * 5 + t) * Math.cos(y * 0.15 + fwd * 4) * 40 + 60;
+          d[idx] = lum;
+          d[idx + 1] = lum * 1.1;
+          d[idx + 2] = lum * 1.2;
+          d[idx + 3] = 255;
+        }
+      }
+      retinaCtx.putImageData(imgData, 0, 0);
+    }
+
+    // --- 5. NEURAL AUDIO SONIFICATION (WEB AUDIO API) ---
+    let audioCtx = null;
+    let isSoundEnabled = false;
+    let masterGain = null;
+    let lastSoundSpikeTime = 0;
+
+    function initAudio() {
+      if (audioCtx) return;
+      try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioContextClass();
+        masterGain = audioCtx.createGain();
+        masterGain.gain.setValueAtTime(0.18, audioCtx.currentTime);
+        masterGain.connect(audioCtx.destination);
+      } catch (err) {
+        console.error("Web Audio API not supported:", err);
+      }
+    }
+
+    function toggleSound() {
+      if (!audioCtx) initAudio();
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      isSoundEnabled = !isSoundEnabled;
+      const btn = document.getElementById('btn-toggle-sound');
+      const icon = document.getElementById('sound-icon');
+      const text = document.getElementById('sound-text');
+      if (isSoundEnabled) {
+        btn.style.background = 'linear-gradient(135deg, #00f0ff, #0088ff)';
+        btn.style.color = '#fff';
+        btn.style.boxShadow = '0 0 16px rgba(0, 240, 255, 0.6)';
+        icon.innerText = '🔊';
+        text.innerText = 'SES: AÇIK';
+        playTone(520, 0.08, 'sine');
+      } else {
+        btn.style.background = 'rgba(0, 240, 255, 0.12)';
+        btn.style.color = 'var(--border-glow)';
+        btn.style.boxShadow = '0 0 10px rgba(0, 240, 255, 0.2)';
+        icon.innerText = '🔇';
+        text.innerText = 'SES: KAPALI';
+      }
+    }
+
+    function playTone(freq, dur, type = 'sine') {
+      if (!isSoundEnabled || !audioCtx) return;
+      try {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
+        osc.connect(gain);
+        gain.connect(masterGain);
+        osc.start();
+        osc.stop(audioCtx.currentTime + dur);
+      } catch (e) {}
+    }
+
+    function playSpikeCrackle(numSpikes) {
+      if (!isSoundEnabled || !audioCtx || numSpikes <= 0) return;
+      const now = audioCtx.currentTime;
+      if (now - lastSoundSpikeTime < 0.035) return;
+      lastSoundSpikeTime = now;
+      try {
+        const dur = Math.min(0.04, 0.005 + numSpikes * 0.0008);
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'triangle';
+        const baseFreq = 750 + Math.random() * 500;
+        osc.frequency.setValueAtTime(baseFreq, now);
+        osc.frequency.exponentialRampToValueAtTime(100, now + dur);
+        const vol = Math.min(0.12, 0.02 + numSpikes * 0.002);
+        gain.gain.setValueAtTime(vol, now);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+        osc.connect(gain);
+        gain.connect(masterGain);
+        osc.start();
+        osc.stop(now + dur);
+      } catch (e) {}
+    }
+
+    // --- 3. STOP / RESUME CONTROLS ---
+    async function togglePause() {
+      try {
+        const res = await fetch('/toggle_pause', { method: 'POST' });
+        const data = await res.json();
+        updatePauseButton(data.is_paused);
+      } catch (err) {
+        console.error("Toggle pause error:", err);
+      }
+    }
+
+    function updatePauseButton(isPaused) {
+      const btn = document.getElementById('btn-toggle-pause');
+      const btnText = document.getElementById('btn-text');
+      const btnIcon = document.getElementById('btn-icon');
+      if (!btn) return;
+      if (isPaused) {
+        btn.style.background = 'linear-gradient(135deg, #00ff66, #00b347)';
+        btn.style.boxShadow = '0 0 16px rgba(0, 255, 102, 0.5)';
+        btnIcon.innerText = '▶️';
+        btnText.innerText = 'DEVAM ET (F10)';
+      } else {
+        btn.style.background = 'linear-gradient(135deg, #ff0055, #ff5500)';
+        btn.style.boxShadow = '0 0 16px rgba(255, 0, 85, 0.5)';
+        btnIcon.innerText = '⏸️';
+        btnText.innerText = 'DURDUR (F10)';
+      }
+    }
+
+    // --- 4. STREAM RELIABILITY & AUTO-HEALING ENGINE ---
+    const streamImg = document.getElementById('live-stream-img');
+    const streamOverlay = document.getElementById('stream-status-overlay');
+    let streamFailedAttempts = 0;
+    let fallbackPollingTimer = null;
+
+    function initStreamManager() {
+      if (!streamImg) return;
+
+      streamImg.onload = () => {
+        streamFailedAttempts = 0;
+        if (streamOverlay) {
+          streamOverlay.innerHTML = '<span style="color: #00ff66;">●</span> CANLI YAYIN AKTİF';
+          streamOverlay.style.borderColor = 'var(--green-glow)';
+          streamOverlay.style.color = 'var(--green-glow)';
+        }
+        if (fallbackPollingTimer) {
+          clearInterval(fallbackPollingTimer);
+          fallbackPollingTimer = null;
+        }
+      };
+
+      streamImg.onerror = () => {
+        streamFailedAttempts++;
+        if (streamOverlay) {
+          streamOverlay.innerHTML = '<span style="color: #ffb703;">⏳</span> YENİDEN BAĞLANILIYOR (' + streamFailedAttempts + ')...';
+          streamOverlay.style.borderColor = '#ffb703';
+          streamOverlay.style.color = '#ffb703';
+        }
+
+        if (streamFailedAttempts < 3) {
+          setTimeout(() => {
+            streamImg.src = '/stream?t=' + Date.now();
+          }, 1000);
+        } else {
+          // Switch to high-speed JPEG polling fallback
+          if (!fallbackPollingTimer) {
+            fallbackPollingTimer = setInterval(pollFallbackFrame, 50); // 20 FPS fallback
+          }
+        }
+      };
+    }
+
+    function pollFallbackFrame() {
+      if (!streamImg) return;
+      const testImg = new Image();
+      testImg.onload = () => {
+        streamImg.src = testImg.src;
+        if (streamOverlay) {
+          streamOverlay.innerHTML = '<span style="color: #00f0ff;">●</span> CANLI (SNAPSHOT MODU)';
+          streamOverlay.style.borderColor = 'var(--border-glow)';
+          streamOverlay.style.color = 'var(--border-glow)';
+        }
+      };
+      testImg.src = '/frame.jpg?t=' + Date.now();
+    }
+
+    function toggleFullscreen() {
+      const container = document.querySelector('.video-container');
+      if (!document.fullscreenElement) {
+        if (container.requestFullscreen) {
+          container.requestFullscreen();
+        } else if (container.webkitRequestFullscreen) {
+          container.webkitRequestFullscreen();
+        }
+      } else {
+        if (document.exitFullscreen) {
+          document.exitFullscreen();
+        }
+      }
+    }
+
+    window.addEventListener('load', () => {
+      initStreamManager();
+      init3DBrain();
+      setInterval(updateTelemetry, 100);
+    });
+  </script>
+</body>
+</html>

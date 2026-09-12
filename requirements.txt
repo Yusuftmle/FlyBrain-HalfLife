@@ -1,0 +1,15 @@
+# Core Biological Neural Simulation & Vision Pipeline
+numpy>=1.24.0
+scipy>=1.10.0
+opencv-python>=4.8.0
+pillow>=9.5.0
+mss>=9.0.0
+
+# Optional: High-Performance GPU Acceleration (CUDA Sparse Tensors)
+# torch>=2.0.0
+
+# Optional: FlyWire / MaleCNS Connectome Database Access
+# caveclient>=5.0.0
+# fafbseg>=2.0.0
+# pandas>=2.0.0
+# pyarrow>=12.0.0
