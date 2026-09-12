@@ -9,7 +9,7 @@
 
 **FlyBrain-HalfLife** is an end-to-end biological neural simulation that connects a high-fidelity reconstruction of the fruit fly (*Drosophila melanogaster*) central nervous system directly to Valve's **Half-Life** (GoldSrc engine).
 
-Built on the open-source **MaleCNS v1.0** (166,700 neurons, 125M synapses) and **FlyWire** connectomic datasets, FlyBrain does not utilize artificial deep neural networks, transformer policies, or reinforcement learning black boxes. Instead, **every movement, turn, jump, weapon discharge, and evasive maneuver is generated entirely by biophysical Leaky Integrate-and-Fire (LIF) circuits**, simulated in real time via sparse GPU/CPU tensor mathematics.
+Built on the open-source **MaleCNS v1.0** (166,700 neurons, 125M synapses) and **FlyWire** connectomic datasets, FlyBrain does not utilize artificial deep neural networks, transformer policies, or reinforcement learning black boxes. Instead, **every movement, turn, jump, and evasive maneuver is generated entirely by biophysical Leaky Integrate-and-Fire (LIF) circuits**, simulated in real time via sparse GPU/CPU tensor mathematics.
 
 ---
 
@@ -23,10 +23,10 @@ Built on the open-source **MaleCNS v1.0** (166,700 neurons, 125M synapses) and *
 
 ## 🎬 Live In-Game Footage
 
-| Combat Retaliation & Giant Fiber Evasion | 3D Connectome Spiking & GCaMP Dynamics |
+| Emergency Escape & Giant Fiber Reflex | 3D Connectome Spiking & GCaMP Dynamics |
 | :---: | :---: |
-| ![Combat Retaliation](assets/demo_combat_retaliation.gif) | ![Connectome 3D](assets/demo_connectome_3d.gif) |
-| *Damage detected: Giant Fiber activates emergency backward hop, 180° saccade, and retaliation fire.* | *12,260-neuron MaleCNS graph firing with axonal conduction delays and calcium fluorescence.* |
+| ![Emergency Escape](assets/demo_combat_retaliation.gif) | ![Connectome 3D](assets/demo_connectome_3d.gif) |
+| *Damage detected: Giant Fiber activates an emergency backward hop, 180° reflex spin, and evasive repositioning.* | *12,260-neuron MaleCNS graph firing with axonal conduction delays and calcium fluorescence.* |
 
 ---
 
@@ -68,15 +68,15 @@ The system operates on an asynchronous four-layer biological processing stack de
 │   • PPL1 / PAM Dopaminergic Neuron Clusters                                            │
 │   • 3-Factor Hebbian STDP on Kenyon Cell (KC) → MBON Synapses:                         │
 │       Δw_ij = η · DA(t) · e_ij(t)                                                      │
-│   • Reward Triggers: Enemy elimination (+1.0), forward progress (+0.4)                 │
-│   • Punishment Triggers: Damage taken (-1.0), corner deadlock (-0.8)                   │
+│   • Reward Triggers: Forward exploration (+0.5), open corridor progress (+0.3)         │
+│   • Punishment Triggers: Damage taken (-1.0), wall / corner collision (-0.8)          │
 └──────────────────────────────────────────┬─────────────────────────────────────────────┘
                                            │ Decoded Motor Commands
                                            ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ 4. NEUROMUSCULAR MOTOR DECODE (InputBridge)                                            │
 │   • DNp20: Bilateral steering differential  ──► Saccadic Turn (A / D) & Mouse Yaw      │
-│   • DNpe017: Locomotor drive & target lock  ──► Forward Thrust (W) & Primary Fire      │
+│   • DNpe017: Locomotor drive & thrust       ──► Forward Walking (W)                    │
 │   • MDN (Moonwalker Descending Neuron):     ──► Backward Step (S) (*Bidaye et al. 2014)│
 │   • Giant Fiber (GF): Chromatic damage      ──► Emergency Leap (Space) + 180° Spin     │
 │   • DirectInput Hardware Driver: Kernel scancodes bypass DirectX virtual input filters │
@@ -93,17 +93,17 @@ The fly eye does not process high-resolution raster buffers. Instead, FlyBrain s
 - **R8 Photoreceptors**: Spectral discrimination pathway. Distinguishes chromatic variations (such as HUD damage flashes, red health kits, and high-contrast hostile player models).
 - **Naka-Rushton Dynamic Saturation**:
   $$\frac{R}{R_{max}} = \frac{I^n}{I^n + \sigma^n}$$
-  Prevents epileptic neural saturation during bright weapon discharges and enhances contrast sensitivity in dark subterranean corridors.
+  Prevents epileptic neural saturation during sudden lighting transitions or explosion flashes and enhances contrast sensitivity in dark subterranean corridors.
 
 ### 2. Motor Decoding Circuits
 Biological descending neurons control discrete locomotion primitives:
 - **DNp20 (Bilateral Steering)**: Measures differential spike counts between left ($DN_{p20,L}$) and right ($DN_{p20,R}$) hemispheres. When differential firing exceeds the action threshold, it issues proportional turning commands via mouse yaw and strafe keys.
-- **DNpe017 (Forward Drive & Attack)**: Encodes forward walking velocity. When coupled with high central visual focus (target acquired in crosshair), it triggers weapon discharge (`DIK_LCLICK`).
+- **DNpe017 (Forward Locomotion)**: Encodes forward walking velocity. Modulates forward thrust (`DIK_W`) based on optical flow and corridor clearance, driving continuous exploration.
 - **MDN (Moonwalker Descending Neuron)**: Replicates the seminal discovery by *Bidaye et al. (Science 2014)*. If optical flow detects zero parallax or persistent collisions for >2 seconds, MDN fires, inhibiting forward stepping and initiating backward walking (`DIK_S`) coupled with an escape turn.
-- **Giant Fiber (GF) Escape & Retaliation**: A massive escape interneuron that triggers when a sharp chromatic red flash (damage) is detected:
+- **Giant Fiber (GF) Emergency Escape Reflex**: A massive biological escape interneuron that triggers when a sharp chromatic red flash (damage taken) is detected:
   1. Instantly commands an evasive backward leap (`DIK_SPACE` + `DIK_S`).
-  2. Dispatches a 180° reflex spin.
-  3. Fires weapon blindly to suppress the attacker.
+  2. Dispatches a 180° reflex spin away from danger.
+  3. Re-routes visual orientation towards open corridors for immediate survival.
 
 ### 3. 3-Factor Hebbian STDP Plasticity
 Associative learning is mediated by dopamine-dependent Spike-Timing-Dependent Plasticity (STDP) across the **Mushroom Body**:
