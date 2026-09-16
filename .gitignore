@@ -28,7 +28,7 @@ wheels/
 .env
 .venv
 venv/
-ENV/
+!env/
 
 # IDE and OS files
 .vscode/

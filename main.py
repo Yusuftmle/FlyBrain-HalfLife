@@ -51,7 +51,7 @@ def run_simulation(args):
     print(f"[*] Execution Mode : {args.mode.upper()}")
     print(f"[*] Visualizer     : {'ENABLED' if not args.no_vis else 'DISABLED (Headless)'}")
     print(f"[*] Web Broadcaster: {'ENABLED (http://localhost:' + str(args.stream_port) + ')' if getattr(args, 'web_stream', True) else 'DISABLED'}")
-    print(f"[*] Hardware Input : {'DRY-RUN (Simulated - Physical Keys Disabled)' if args.dry_run else 'LIVE DIRECTINPUT (PHYSICAL KEYS ACTIVE: W, A, S, D, Mouse)'}")
+    print(f"[*] Hardware Input : {'DRY-RUN (Simulated - Physical Keys Disabled)' if (args.dry_run or args.mode == 'arena') else 'LIVE DIRECTINPUT (PHYSICAL KEYS ACTIVE: W, A, S, D, Mouse)'}")
     if args.record:
         print(f"[*] Video Output   : {args.record}")
     print("-" * 74)
@@ -98,7 +98,7 @@ def run_simulation(args):
         turn_threshold=0.03,
         walk_threshold=0.05,
         attack_threshold=0.35,
-        dry_run=args.dry_run, 
+        dry_run=args.dry_run or (args.mode == "arena"), 
         cooldown_duration=0.08,
         target_hwnd=vision_bridge.hwnd if args.mode == "live" else None
     )
@@ -412,21 +412,21 @@ def run_simulation(args):
                     try:
                         user32_hk = ctypes.windll.user32
                         t_now_hk = time.time()
-                    if (t_now_hk - last_global_hotkey_time) > 0.35:
-                        # F8 (0x77): Toggle Lossless MP4 Recording
-                        if user32_hk.GetAsyncKeyState(0x77) & 0x8000:
-                            last_global_hotkey_time = t_now_hk
-                            visualizer.toggle_recording()
-                        # F11 (0x7A): Toggle Window Pinned Topmost
-                        elif user32_hk.GetAsyncKeyState(0x7A) & 0x8000:
-                            last_global_hotkey_time = t_now_hk
-                            visualizer.toggle_topmost("FlyBrain - MaleCNS Connectome Telemetry")
-                        # F6 (0x75): Refocus Half-Life Game Window
-                        elif user32_hk.GetAsyncKeyState(0x75) & 0x8000:
-                            last_global_hotkey_time = t_now_hk
-                            vision_bridge.focus_game_window()
-                except Exception:
-                    pass
+                        if (t_now_hk - last_global_hotkey_time) > 0.35:
+                            # F8 (0x77): Toggle Lossless MP4 Recording
+                            if user32_hk.GetAsyncKeyState(0x77) & 0x8000:
+                                last_global_hotkey_time = t_now_hk
+                                visualizer.toggle_recording()
+                            # F11 (0x7A): Toggle Window Pinned Topmost
+                            elif user32_hk.GetAsyncKeyState(0x7A) & 0x8000:
+                                last_global_hotkey_time = t_now_hk
+                                visualizer.toggle_topmost("FlyBrain - MaleCNS Connectome Telemetry")
+                            # F6 (0x75): Refocus Half-Life Game Window
+                            elif user32_hk.GetAsyncKeyState(0x75) & 0x8000:
+                                last_global_hotkey_time = t_now_hk
+                                vision_bridge.focus_game_window()
+                    except Exception:
+                        pass
 
             # 8.5. Live Web Broadcaster Update (MJPEG Stream & Biological Telemetry)
             if broadcaster and broadcaster.is_running:
