@@ -7,9 +7,9 @@ import time
 from typing import Tuple, Dict, Any, Optional
 import numpy as np
 import cv2
-import mss
-import ctypes
-import ctypes.wintypes
+import cv2
+import numpy as np
+from core.platform import get_screen_capture_driver
 
 logger = logging.getLogger("FlyBrain.VisionBridge")
 if not logger.handlers:
@@ -19,24 +19,11 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
-class PROCESSENTRY32W(ctypes.Structure):
-    _fields_ = [
-        ('dwSize', ctypes.wintypes.DWORD),
-        ('cntUsage', ctypes.wintypes.DWORD),
-        ('th32ProcessID', ctypes.wintypes.DWORD),
-        ('th32DefaultHeapID', ctypes.POINTER(ctypes.c_ulong)),
-        ('th32ModuleID', ctypes.wintypes.DWORD),
-        ('cntThreads', ctypes.wintypes.DWORD),
-        ('th32ParentProcessID', ctypes.wintypes.DWORD),
-        ('pcPriClassBase', ctypes.c_long),
-        ('dwFlags', ctypes.wintypes.DWORD),
-        ('szExeFile', ctypes.c_wchar * 260)
-    ]
 
 class VisionBridge:
     """
     Sub-2ms Game Frame Capture and Biophysical Retinal Transduction Layer.
-    Uses mss for high-frequency direct memory frame transfer.
+    Uses platform-abstracted screen capture for high-frequency direct memory frame transfer.
     Converts photons to neural current via Naka-Rushton Log-Sigmoidal kinetics
     with Poisson synaptic noise generation (No toy linear scaling).
     """
@@ -59,10 +46,8 @@ class VisionBridge:
         self.sigma_semi: float = semi_saturation
         self.n_hill: float = hill_exponent
         
-        # Low-Latency MSS Instance
-        self.sct: mss.MSS = mss.MSS()
-        self.hwnd: Optional[int] = None
-        self._find_game_window()
+        # Platform Screen Capture Driver (Windows GDI/MSS or Linux X11/MSS)
+        self.capture_driver = get_screen_capture_driver(target_title=window_title)
         
         # Elementary Motion Detector State
         self.prev_gray: Optional[np.ndarray] = None
@@ -74,373 +59,55 @@ class VisionBridge:
         self.last_valid_frame: Optional[np.ndarray] = None
         self.prev_hud_crop: Optional[np.ndarray] = None
         
-        # Persistent GDI Contexts for Ultra-Fast Window Capture (Zero per-frame allocations)
-        self._gdi_hwnd: Optional[int] = None
-        self._gdi_hdc_window: Optional[int] = None
-        self._gdi_hdc_mem: Optional[int] = None
-        self._gdi_hbm: Optional[int] = None
-        self._gdi_old_bm: Optional[int] = None
-        self._gdi_w: int = 0
-        self._gdi_h: int = 0
-        self._gdi_buf: Optional[np.ndarray] = None
-        self._gdi_bih: Any = None
-        
         logger.info(f"VisionBridge initialized: {self.w}x{self.h} grid ({self.total_ommatidia} ommatidia).")
 
-    def _cleanup_gdi(self):
-        """Releases cached Win32 GDI contexts cleanly."""
-        try:
-            user32 = ctypes.windll.user32
-            gdi32 = ctypes.windll.gdi32
-            if self._gdi_hdc_mem:
-                if self._gdi_old_bm:
-                    gdi32.SelectObject(self._gdi_hdc_mem, self._gdi_old_bm)
-                if self._gdi_hbm:
-                    gdi32.DeleteObject(self._gdi_hbm)
-                gdi32.DeleteDC(self._gdi_hdc_mem)
-            if self._gdi_hdc_window and self._gdi_hwnd:
-                user32.ReleaseDC(self._gdi_hwnd, self._gdi_hdc_window)
-        except Exception:
-            pass
-        self._gdi_hwnd = None
-        self._gdi_hdc_window = None
-        self._gdi_hdc_mem = None
-        self._gdi_hbm = None
-        self._gdi_old_bm = None
-        self._gdi_w = 0
-        self._gdi_h = 0
-        self._gdi_buf = None
-        self._gdi_bih = None
+    @property
+    def hwnd(self) -> Optional[int]:
+        """Backwards compatibility property for Windows window handle."""
+        return getattr(self.capture_driver, "hwnd", None)
 
-    def __del__(self):
-        self._cleanup_gdi()
-
-    def _find_game_window(self):
-        """Locates game window handle using Win32 API FindWindow and Process Enumeration."""
-        try:
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
-
-            # Ensure connection to interactive desktop
-            try:
-                hinput = user32.OpenInputDesktop(0, False, 0x01FF)
-                if hinput:
-                    user32.SetThreadDesktop(hinput)
-            except Exception:
-                pass
-
-            # 1. Direct Search by Title (Half-Life, Counter-Strike, etc.)
-            candidates = [self.window_title, "Half-Life", "hl", "Counter-Strike", "DOOM", "GZDoom"]
-            for title in candidates:
-                hwnd = user32.FindWindowW(None, title)
-                if hwnd != 0 and user32.IsWindowVisible(hwnd):
-                    self.hwnd = hwnd
-                    logger.info(f"Attached to game window by title: '{title}' (HWND: {hwnd})")
-                    return
-
-            # 2. Search by GoldSrc and Steam SDL2 window class (Verifying hl.exe process)
-            for cls_name in ["SDL_app", "Valve001"]:
-                for title in ["Half-Life", "Counter-Strike", None]:
-                    hwnd = user32.FindWindowW(cls_name, title)
-                    if hwnd != 0 and user32.IsWindowVisible(hwnd):
-                        pid = ctypes.wintypes.DWORD()
-                        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                        hProc = kernel32.OpenProcess(0x1000, False, pid.value)
-                        if hProc:
-                            buf = ctypes.create_unicode_buffer(1024)
-                            sz = ctypes.wintypes.DWORD(1024)
-                            if kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(sz)):
-                                pname = buf.value.lower()
-                                if any(k in pname for k in ['hl.exe', 'cstrike.exe', 'half-life.exe']):
-                                    kernel32.CloseHandle(hProc)
-                                    self.hwnd = hwnd
-                                    logger.info(f"Attached to game window by class '{cls_name}': HWND {hwnd}")
-                                    return
-                            kernel32.CloseHandle(hProc)
-
-            # 3. Direct Enumeration of all visible windows for hl.exe / cstrike.exe
-            found = None
-            def enum_cb(h, _):
-                nonlocal found
-                if user32.IsWindowVisible(h):
-                    pid = ctypes.wintypes.DWORD()
-                    user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
-                    hProc = kernel32.OpenProcess(0x1000, False, pid.value)
-                    if hProc:
-                        buf = ctypes.create_unicode_buffer(1024)
-                        sz = ctypes.wintypes.DWORD(1024)
-                        if kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(sz)):
-                            pname = buf.value.lower()
-                            if any(k in pname for k in ['hl.exe', 'cstrike.exe', 'half-life.exe']):
-                                rect = ctypes.wintypes.RECT()
-                                user32.GetWindowRect(h, ctypes.byref(rect))
-                                if (rect.right - rect.left) >= 100 and (rect.bottom - rect.top) >= 100:
-                                    found = h
-                                    kernel32.CloseHandle(hProc)
-                                    return False
-                        kernel32.CloseHandle(hProc)
-                return True
-
-            WND = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
-            user32.EnumWindows(WND(enum_cb), 0)
-            if found:
-                self.hwnd = found
-                logger.info(f"Attached to game window via process scan (HWND: {found})")
-                return
-
-        except Exception as e:
-            logger.error(f"Error finding game window: {e}")
-            
-        logger.info(f"Window '{self.window_title}' not directly bound by HWND. Using process/monitor bridge.")
-
-    def is_game_process_running(self) -> bool:
-        """Checks if hl.exe or target game process is active on the system."""
-        try:
-            kernel32 = ctypes.windll.kernel32
-            hSnap = kernel32.CreateToolhelp32Snapshot(0x00000002, 0) # TH32CS_SNAPPROCESS
-            if hSnap == -1:
-                return False
-            pe = PROCESSENTRY32W()
-            pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-            found = False
-            targets = ['hl.exe', 'cstrike.exe', 'half-life.exe', 'cs.exe']
-            if kernel32.Process32FirstW(hSnap, ctypes.byref(pe)):
-                while True:
-                    if pe.szExeFile.lower() in targets:
-                        found = True
-                        break
-                    if not kernel32.Process32NextW(hSnap, ctypes.byref(pe)):
-                        break
-            kernel32.CloseHandle(hSnap)
-            return found
-        except Exception:
-            return False
-
-    def focus_game_window(self) -> bool:
-        """Brings the game window to the foreground to ensure DirectInput keyboard focus."""
-        if not self.hwnd:
-            self._find_game_window()
-        if self.hwnd:
-            try:
-                ctypes.windll.user32.ShowWindow(self.hwnd, 9) # SW_RESTORE
-                ctypes.windll.user32.SetForegroundWindow(self.hwnd)
-                logger.info(f"Half-Life window focused (HWND: {self.hwnd}).")
-                return True
-            except Exception as e:
-                logger.warning(f"Could not focus game window: {e}")
-        return False
+    @property
+    def sct(self):
+        """Backwards compatibility property for MSS instance."""
+        return getattr(self.capture_driver, "sct", None)
 
     def is_game_running(self) -> bool:
-        """Returns True if the game window is currently running, or hl.exe process is active."""
-        if self.hwnd and ctypes.windll.user32.IsWindow(self.hwnd):
-            rect = ctypes.wintypes.RECT()
-            ctypes.windll.user32.GetWindowRect(self.hwnd, ctypes.byref(rect))
-            if (rect.right - rect.left) >= 50 and (rect.bottom - rect.top) >= 50:
-                return True
-        self._find_game_window()
-        if self.hwnd and ctypes.windll.user32.IsWindow(self.hwnd):
-            return True
-        return self.is_game_process_running()
+        """Returns True if the game window is currently running or process is active."""
+        return self.capture_driver.is_game_running()
+
+    def is_game_process_running(self) -> bool:
+        """Checks if game process is active on the system."""
+        return self.capture_driver.is_game_process_running()
+
+    def focus_game_window(self) -> bool:
+        """Brings the game window to the foreground."""
+        return self.capture_driver.focus_game_window()
 
     def is_game_focused(self) -> bool:
         """Returns True if the game window is the active foreground window."""
-        if not self.is_game_running():
-            return False
-        try:
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
-            try:
-                hinput = user32.OpenInputDesktop(0, False, 0x01FF)
-                if hinput:
-                    user32.SetThreadDesktop(hinput)
-            except Exception:
-                pass
-            fg = user32.GetForegroundWindow()
-            if not fg:
-                return False
-            if self.hwnd and fg == self.hwnd:
-                return True
-            pid = ctypes.wintypes.DWORD()
-            user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
-            hProc = kernel32.OpenProcess(0x1000, False, pid.value)
-            if hProc:
-                buf = ctypes.create_unicode_buffer(1024)
-                sz = ctypes.wintypes.DWORD(1024)
-                if kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(sz)):
-                    pname = buf.value.lower()
-                    if any(k in pname for k in ['hl.exe', 'cstrike.exe', 'half-life.exe']):
-                        kernel32.CloseHandle(hProc)
-                        self.hwnd = fg
-                        return True
-                kernel32.CloseHandle(hProc)
-            length = user32.GetWindowTextLengthW(fg)
-            if length > 0:
-                buff = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(fg, buff, length + 1)
-                title = buff.value.lower()
-                if any(k in title for k in ['half-life', 'valve001']):
-                    self.hwnd = fg
-                    return True
-        except Exception:
-            pass
-        return False
-
-    def _capture_via_printwindow(self) -> Optional[np.ndarray]:
-        """
-        Directly captures Half-Life window buffer using Win32 PrintWindow (PW_RENDERFULLCONTENT).
-        Captures clean 800x600 game pixels with ~5.8ms latency even if Half-Life is occluded
-        behind VS Code or other desktop windows.
-        """
-        if not self.hwnd:
-            return None
-        try:
-            user32 = ctypes.windll.user32
-            gdi32 = ctypes.windll.gdi32
-
-            try:
-                hinput = user32.OpenInputDesktop(0, False, 0x01FF)
-                if hinput:
-                    user32.SetThreadDesktop(hinput)
-            except Exception:
-                pass
-
-            rect = ctypes.wintypes.RECT()
-            user32.GetClientRect(self.hwnd, ctypes.byref(rect))
-            w = int(rect.right - rect.left)
-            h = int(rect.bottom - rect.top)
-            if w < 100 or h < 100:
-                return None
-
-            # Re-initialize GDI structures only if window handle or geometry changed
-            if (self._gdi_hwnd != self.hwnd or self._gdi_w != w or self._gdi_h != h or 
-                self._gdi_hdc_mem is None or self._gdi_hbm is None):
-                self._cleanup_gdi()
-                hdc_window = user32.GetDC(self.hwnd)
-                if not hdc_window:
-                    return None
-                hdc_mem = gdi32.CreateCompatibleDC(hdc_window)
-                hbm = gdi32.CreateCompatibleBitmap(hdc_window, w, h)
-                old_bm = gdi32.SelectObject(hdc_mem, hbm)
-
-                class BITMAPINFOHEADER(ctypes.Structure):
-                    _fields_ = [
-                        ('biSize', ctypes.wintypes.DWORD),
-                        ('biWidth', ctypes.wintypes.LONG),
-                        ('biHeight', ctypes.wintypes.LONG),
-                        ('biPlanes', ctypes.wintypes.WORD),
-                        ('biBitCount', ctypes.wintypes.WORD),
-                        ('biCompression', ctypes.wintypes.DWORD),
-                        ('biSizeImage', ctypes.wintypes.DWORD),
-                        ('biXPelsPerMeter', ctypes.wintypes.LONG),
-                        ('biYPelsPerMeter', ctypes.wintypes.LONG),
-                        ('biClrUsed', ctypes.wintypes.DWORD),
-                        ('biClrImportant', ctypes.wintypes.DWORD)
-                    ]
-                bih = BITMAPINFOHEADER()
-                bih.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-                bih.biWidth = w
-                bih.biHeight = -h # top-down DIB
-                bih.biPlanes = 1
-                bih.biBitCount = 32
-                bih.biCompression = 0
-
-                self._gdi_hwnd = self.hwnd
-                self._gdi_hdc_window = hdc_window
-                self._gdi_hdc_mem = hdc_mem
-                self._gdi_hbm = hbm
-                self._gdi_old_bm = old_bm
-                self._gdi_w = w
-                self._gdi_h = h
-                self._gdi_bih = bih
-                self._gdi_buf = np.empty((h, w, 4), dtype=np.uint8)
-
-            # PW_RENDERFULLCONTENT = 2, fallback to 0
-            res = user32.PrintWindow(self.hwnd, self._gdi_hdc_mem, 2)
-            if not res:
-                res = user32.PrintWindow(self.hwnd, self._gdi_hdc_mem, 0)
-
-            frame_bgr = None
-            if res:
-                gdi32.GetDIBits(
-                    self._gdi_hdc_mem, self._gdi_hbm, 0, h, 
-                    self._gdi_buf.ctypes.data_as(ctypes.c_void_p), 
-                    ctypes.byref(self._gdi_bih), 0
-                )
-                frame_bgr = cv2.cvtColor(self._gdi_buf, cv2.COLOR_BGRA2BGR)
-
-            # Check for non-blank frame
-            if frame_bgr is not None and frame_bgr.size > 0 and float(np.mean(frame_bgr)) > 0.5:
-                return frame_bgr
-            return None
-        except Exception as e:
-            logger.debug(f"PrintWindow capture exception: {e}")
-            self._cleanup_gdi()
-            return None
+        return self.capture_driver.is_game_focused()
 
     def capture_frame(self) -> np.ndarray:
-        """Grabs active game screen via PrintWindow window-buffer (primary) or memory-mapped MSS (fallback)."""
-        frame = None
-        try:
-            if not self.is_game_running():
-                standby = np.zeros((480, 640, 3), dtype=np.uint8)
-                cv2.putText(standby, "HALF-LIFE NOT DETECTED", (120, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 165, 255), 2)
-                cv2.putText(standby, "Waiting for game window... (Inputs Locked)", (100, 260), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
-                return standby
+        """Grabs active game frame via platform capture driver."""
+        if not self.is_game_running():
+            standby = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(standby, "HALF-LIFE NOT DETECTED", (120, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 165, 255), 2)
+            cv2.putText(standby, "Waiting for game window... (Inputs Locked)", (100, 260), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
+            return standby
 
-            # 1. Primary: Direct Window-Buffer Capture via PrintWindow (bypasses overlapping desktop windows!)
-            if self.hwnd:
-                frame = self._capture_via_printwindow()
-
-            # 2. Fallback: Bound window rect via MSS
-            if frame is None and self.hwnd:
-                rect = ctypes.wintypes.RECT()
-                ctypes.windll.user32.GetWindowRect(self.hwnd, ctypes.byref(rect))
-                w = int(rect.right - rect.left)
-                h = int(rect.bottom - rect.top)
-                if w >= 100 and h >= 100 and rect.left > -1000 and rect.top > -1000:
-                    monitor = {
-                        "left": max(0, int(rect.left)),
-                        "top": max(0, int(rect.top)),
-                        "width": w,
-                        "height": h
-                    }
-                    raw_sct = self.sct.grab(monitor)
-                    bgra = np.array(raw_sct, dtype=np.uint8)
-                    frame = cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR)
-
-            # 3. Secondary Fallback: Fullscreen / Borderless capture on primary monitor
-            if frame is None and self.is_game_running():
-                mon = self.sct.monitors[1]
-                cx, cy = mon["width"] // 2, mon["height"] // 2
-                crop_w, crop_h = min(800, mon["width"]), min(600, mon["height"])
-                monitor = {
-                    "left": cx - crop_w // 2,
-                    "top": cy - crop_h // 2,
-                    "width": crop_w,
-                    "height": crop_h
-                }
-                raw_sct = self.sct.grab(monitor)
-                bgra = np.array(raw_sct, dtype=np.uint8)
-                frame = cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR)
-
-            if frame is not None:
-                self.last_valid_frame = frame
-                return frame
-        except Exception as e:
-            logger.error(f"Frame grab error: {e}")
-            try:
-                self.sct.close()
-            except Exception:
-                pass
-            try:
-                self.sct = mss.mss()
-            except Exception:
-                pass
+        frame = self.capture_driver.grab_frame()
+        if frame is not None and frame.size > 0:
+            self.last_valid_frame = frame
+            return frame
 
         if self.last_valid_frame is not None:
             return self.last_valid_frame.copy()
 
         return np.zeros((360, 640, 3), dtype=np.uint8)
+
+    def close(self):
+        """Releases capture resources."""
+        self.capture_driver.close()
 
     def crop_halflife_fov(
         self, 

@@ -10,8 +10,13 @@ Features:
 import os
 import math
 import time
+import sys
 import ctypes
-import ctypes.wintypes
+if sys.platform == "win32":
+    try:
+        import ctypes.wintypes
+    except Exception:
+        pass
 from typing import Dict, Any, Optional, List, Tuple
 import numpy as np
 import cv2
@@ -547,6 +552,8 @@ class FlyBrainVisualizer:
 
     def apply_win32_window_styles(self, window_title: str, topmost: bool = True, no_activate: bool = True):
         """Applies Win32 HWND_TOPMOST and WS_EX_NOACTIVATE styles."""
+        if sys.platform != "win32":
+            return
         try:
             user32 = ctypes.windll.user32
             user32.SetWindowPos.argtypes = [
