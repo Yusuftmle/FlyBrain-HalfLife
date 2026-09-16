@@ -105,8 +105,9 @@ class HalfLifeArena:
         self.player_angle += turn_val * rot_speed
         self.player_angle %= (2 * math.pi)
 
-        # 2. Forward Movement with sliding collision
-        move_speed = 0.12 * min(1.0, max(0.0, forward_val))
+        # 2. Movement (Forward & Backward) with sliding collision
+        move_val = max(-1.0, min(1.0, forward_val))
+        move_speed = 0.12 * move_val
         dx = math.cos(self.player_angle) * move_speed
         dy = math.sin(self.player_angle) * move_speed
 
@@ -116,17 +117,13 @@ class HalfLifeArena:
         # Slide along X
         if self._is_walkable(new_x, self.player_y):
             self.player_x = new_x
-        else:
-            events.append({"type": "damage", "mag": 0.08})
 
         # Slide along Y
         if self._is_walkable(self.player_x, new_y):
             self.player_y = new_y
-        else:
-            events.append({"type": "damage", "mag": 0.08})
 
-        if move_speed > 0.04:
-            events.append({"type": "forward", "mag": 0.05})
+        if abs(move_speed) > 0.03:
+            events.append({"type": "forward" if move_speed > 0 else "backward", "mag": 0.05})
 
         # Record route breadcrumbs every 3 frames
         if self._step_counter % 3 == 0:
@@ -160,6 +157,14 @@ class HalfLifeArena:
                 elif ent.type == "enemy":
                     self.health = max(0.0, self.health - 15.0)
                     events.append({"type": "damage", "mag": 1.0})
+
+        # Auto-respawn at start of maze if player dies
+        if self.health <= 0:
+            self.player_x = 1.5
+            self.player_y = 1.5
+            self.player_angle = 0.0
+            self.health = 100.0
+            self.trail = [(self.player_x, self.player_y)]
 
         # Respawn entities if all enemies defeated
         if not any(e.alive for e in self.entities if e.type == "enemy"):
@@ -342,9 +347,10 @@ class HalfLifeArena:
                         cv2.line(frame, (screen_x, top_y + sprite_size//3), 
                                  (screen_x, top_y + 2*sprite_size//3), (0, 0, 255), cw)
 
-        # 5. Crosshair
+        # 5. Crosshair (compact 6px crosshair)
         cx, cy = self.w // 2, self.h // 2
-        cv2.drawMarker(frame, (cx, cy), (0, 255, 255), cv2.MARKER_CROSS, 16, 1)
+        cv2.line(frame, (cx - 4, cy), (cx + 4, cy), (0, 255, 255), 1)
+        cv2.line(frame, (cx, cy - 4), (cx, cy + 4), (0, 255, 255), 1)
 
         # 6. Muzzle Flash
         if self.muzzle_flash_timer > 0:

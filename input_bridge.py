@@ -532,11 +532,29 @@ class InputBridge:
             else:
                 actions.append("UNSTUCK EVASION (S + Turn)")
 
+        # Reflect evasive unstuck turns, giant fiber reflexes, and backward steps into motor_info
+        effective_turn_diff = turn_diff
+        effective_net_fwd = net_fwd
+
+        if getattr(self, "is_unstucking", False):
+            effective_turn_diff = 0.85 if self.is_turning_r else -0.85
+            effective_net_fwd = -0.65
+        elif getattr(self, "is_escaping", False):
+            effective_turn_diff = 0.95
+            effective_net_fwd = -0.75
+        elif is_backward:
+            effective_net_fwd = -max(0.4, abs(net_fwd))
+            # If facing dead ahead into an obstacle with near-zero turn diff, apply a steering bias
+            if abs(effective_turn_diff) < 0.05:
+                if not hasattr(self, "turn_bias_dir"):
+                    self.turn_bias_dir = 1
+                effective_turn_diff = 0.55 * self.turn_bias_dir
+
         return {
-            "turn_diff": float(turn_diff),
+            "turn_diff": float(effective_turn_diff),
             "forward_rate": float(dnpe017_forward_rate),
             "backward_rate": float(mdn_backward_rate),
-            "net_forward": float(net_fwd),
+            "net_forward": float(effective_net_fwd),
             "attack_rate": float(dnpe017_attack_rate),
             "action": self.current_action,
             "is_firing": self.is_firing,
