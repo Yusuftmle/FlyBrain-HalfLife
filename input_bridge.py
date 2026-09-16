@@ -17,16 +17,23 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
-# High-Performance DirectInput API (DirectX / GoldSrc compatibility)
-try:
-    import pydirectinput
-    pydirectinput.PAUSE = 0.0 # Crucial: prevent default 100ms lag on every keypress
-    pydirectinput.FAILSAFE = False
-    PYDIRECTINPUT_AVAILABLE = True
-except ImportError:
-    PYDIRECTINPUT_AVAILABLE = False
+import sys
+from core.platform import get_input_driver, ActionKey
 
-# Win32 DirectInput Hardware Scancodes (Hardware-level keyboard/mouse fallback)
+# Semantic Action Key Mapping
+ACTION_KEY_MAP = {
+    'w': ActionKey.FORWARD,
+    's': ActionKey.BACKWARD,
+    'a': ActionKey.STRAFE_LEFT,
+    'd': ActionKey.STRAFE_RIGHT,
+    'left': ActionKey.TURN_LEFT,
+    'right': ActionKey.TURN_RIGHT,
+    'space': ActionKey.JUMP,
+    'lcontrol': ActionKey.CROUCH,
+    'f9': ActionKey.QUICKLOAD
+}
+
+# DirectInput Hardware Scancodes (kept as backwards-compatible aliases)
 DIK_W = 0x11
 DIK_A = 0x1E
 DIK_S = 0x1F
@@ -35,66 +42,9 @@ DIK_SPACE = 0x39
 DIK_LCONTROL = 0x1D
 DIK_LEFT = 0xCB   # DirectInput Arrow Left
 DIK_RIGHT = 0xCD  # DirectInput Arrow Right
-
-PUL = ctypes.POINTER(ctypes.c_ulong)
-import ctypes.wintypes
-
-class CURSORINFO(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", ctypes.c_uint),
-        ("flags", ctypes.c_uint),
-        ("hCursor", ctypes.c_void_p),
-        ("ptScreenPos", ctypes.wintypes.POINT)
-    ]
-
 VK_F9 = 0x78
 VK_F10 = 0x79
 VK_F12 = 0x7B
-
-class KeyBdInput(ctypes.Structure):
-    _fields_ = [
-        ("wVk", ctypes.c_ushort),
-        ("wScan", ctypes.c_ushort),
-        ("dwFlags", ctypes.c_ulong),
-        ("time", ctypes.c_ulong),
-        ("dwExtraInfo", PUL)
-    ]
-
-class HardwareInput(ctypes.Structure):
-    _fields_ = [
-        ("uMsg", ctypes.c_ulong),
-        ("wParamL", ctypes.c_short),
-        ("wParamH", ctypes.c_ushort)
-    ]
-
-class MouseInput(ctypes.Structure):
-    _fields_ = [
-        ("dx", ctypes.c_long),
-        ("dy", ctypes.c_long),
-        ("mouseData", ctypes.c_ulong),
-        ("dwFlags", ctypes.c_ulong),
-        ("time", ctypes.c_ulong),
-        ("dwExtraInfo", PUL)
-    ]
-
-class Input_I(ctypes.Union):
-    _fields_ = [
-        ("ki", KeyBdInput),
-        ("mi", MouseInput),
-        ("hi", HardwareInput)
-    ]
-
-class Input(ctypes.Structure):
-    _fields_ = [
-        ("type", ctypes.c_ulong),
-        ("ii", Input_I)
-    ]
-
-KEYEVENTF_SCANCODE = 0x0008
-KEYEVENTF_KEYUP = 0x0002
-MOUSEEVENTF_MOVE = 0x0001
-MOUSEEVENTF_LEFTDOWN = 0x0002
-MOUSEEVENTF_LEFTUP = 0x0004
 
 class InputBridge:
     """
@@ -147,12 +97,16 @@ class InputBridge:
         self.last_escape_time: float = 0.0
         self.last_fire_time: float = 0.0
         self.last_combat_retaliation_time: float = 0.0
+        
+        # Platform Input Driver (Windows SendInput or Linux evdev/pynput)
+        self.input_driver = get_input_driver(dry_run=self.dry_run)
+        
         logger.info(f"InputBridge initialized (Dry-Run: {self.dry_run}, Cooldown: {self.cooldown_duration*1000:.0f}ms, MouseGain: {self.mouse_turn_gain}).")
         logger.info("🔒 Safety Guard engaged: F10/F12 to Toggle Bot, F9 to Toggle Menu Lock, Desktop auto-lock active.")
 
     def is_allowed_overlay_or_telemetry(self, fg: int) -> bool:
         """Checks if the foreground window is NVIDIA GeForce Overlay or FlyBrain Telemetry window."""
-        if not fg:
+        if not fg or sys.platform != "win32":
             return False
         try:
             user32 = ctypes.windll.user32
@@ -191,7 +145,7 @@ class InputBridge:
 
     def is_game_focused(self) -> bool:
         """Verifies if the active foreground window is Half-Life / target game window or allowed overlay."""
-        if self.dry_run:
+        if self.dry_run or sys.platform != "win32":
             return True
         try:
             user32 = ctypes.windll.user32
@@ -243,31 +197,18 @@ class InputBridge:
 
     def is_cursor_visible(self) -> bool:
         """
-        Detects if the Windows mouse cursor is showing while Half-Life is focused.
+        Detects if the mouse cursor is showing while Half-Life is focused.
         In FPS gameplay, mouse cursor is hidden/locked.
         When ESC menu or ~ console is opened, cursor becomes visible.
         """
         if self.dry_run or not self.menu_lock_enabled:
             return False
-        try:
-            fg = ctypes.windll.user32.GetForegroundWindow()
-            # If NVIDIA overlay or Telemetry window is open, cursor is expected; do not treat as game pause
-            if self.is_allowed_overlay_or_telemetry(fg):
-                return False
-
-            if not self.is_game_focused():
-                return False
-            ci = CURSORINFO()
-            ci.cbSize = ctypes.sizeof(CURSORINFO)
-            if ctypes.windll.user32.GetCursorInfo(ctypes.byref(ci)):
-                # CURSOR_SHOWING = 0x00000001
-                return bool(ci.flags & 1)
-        except Exception:
-            pass
-        return False
+        return self.input_driver.is_cursor_visible()
 
     def check_hotkeys(self) -> bool:
-        """Listens for F9 (Menu Lock toggle) and F10 / F12 (Bot pause toggle)."""
+        """Listens for F9 (Menu Lock toggle) and F10 / F12 (Bot pause toggle) on Windows."""
+        if sys.platform != "win32":
+            return False
         try:
             user32 = ctypes.windll.user32
             now = time.time()
@@ -324,96 +265,70 @@ class InputBridge:
             return False
         if self.dry_run:
             return True
-        fg = ctypes.windll.user32.GetForegroundWindow()
-        if self.is_allowed_overlay_or_telemetry(fg):
-            return False
-        if not self.is_game_focused():
-            return False
-        if self.is_cursor_visible():
-            return False
-        return True
+        if sys.platform != "win32":
+            return not self.is_cursor_visible()
+        try:
+            fg = ctypes.windll.user32.GetForegroundWindow()
+            if self.is_allowed_overlay_or_telemetry(fg):
+                return False
+            if not self.is_game_focused():
+                return False
+            if self.is_cursor_visible():
+                return False
+            return True
+        except Exception:
+            return True
 
     def _send_key_event(self, scancode: int, is_up: bool = False):
+        """Dispatches key event via platform input driver."""
         if self.dry_run:
             return
-        if not is_up and not self.can_send_input():
-            return
-        try:
-            flags = KEYEVENTF_SCANCODE
+        rev_map = {
+            DIK_W: ActionKey.FORWARD, DIK_S: ActionKey.BACKWARD,
+            DIK_A: ActionKey.STRAFE_LEFT, DIK_D: ActionKey.STRAFE_RIGHT,
+            DIK_LEFT: ActionKey.TURN_LEFT, DIK_RIGHT: ActionKey.TURN_RIGHT,
+            DIK_SPACE: ActionKey.JUMP, DIK_LCONTROL: ActionKey.CROUCH,
+            VK_F9: ActionKey.QUICKLOAD
+        }
+        action = rev_map.get(scancode)
+        if action:
             if is_up:
-                flags |= KEYEVENTF_KEYUP
-            extra = ctypes.c_ulong(0)
-            ii_ = Input_I()
-            ii_.ki = KeyBdInput(0, scancode, flags, 0, ctypes.pointer(extra))
-            x = Input(ctypes.c_ulong(1), ii_)
-            ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
-        except Exception as e:
-            logger.error(f"Error sending key event (scancode {scancode}): {e}")
+                self.input_driver.release_action(action)
+            elif self.can_send_input():
+                self.input_driver.press_action(action)
 
-    def _send_mouse_click(self, duration: float = 0.001):
+    def _send_mouse_click(self, duration: float = 0.05):
         if self.dry_run or not self.can_send_input():
             return
-        try:
-            extra = ctypes.c_ulong(0)
-            ii_ = Input_I()
-            ii_.mi = MouseInput(0, 0, 0, MOUSEEVENTF_LEFTDOWN, 0, ctypes.pointer(extra))
-            x = Input(ctypes.c_ulong(0), ii_)
-            ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
-            ii_.mi = MouseInput(0, 0, 0, MOUSEEVENTF_LEFTUP, 0, ctypes.pointer(extra))
-            ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
-        except Exception as e:
-            logger.error(f"Error sending mouse click: {e}")
+        self.input_driver.mouse_click(duration)
 
     def _send_mouse_move(self, dx: int, dy: int):
         if self.dry_run or not self.can_send_input():
             return
-        if PYDIRECTINPUT_AVAILABLE:
-            try:
-                pydirectinput.moveRel(int(dx), int(dy), relative=True)
-                return
-            except Exception as e:
-                logger.debug(f"pydirectinput moveRel fallback: {e}")
-        try:
-            extra = ctypes.c_ulong(0)
-            ii_ = Input_I()
-            ii_.mi = MouseInput(int(dx), int(dy), 0, MOUSEEVENTF_MOVE, 0, ctypes.pointer(extra))
-            x = Input(ctypes.c_ulong(0), ii_)
-            ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
-        except Exception as e:
-            logger.error(f"Error sending mouse move: {e}")
+        self.input_driver.mouse_move_relative(int(dx), int(dy))
 
     def _send_key_down(self, key_name: str, scancode: int):
         if self.dry_run or not self.can_send_input():
             return
-        if PYDIRECTINPUT_AVAILABLE:
-            try:
-                pydirectinput.keyDown(key_name)
-                return
-            except Exception as e:
-                logger.debug(f"pydirectinput keyDown({key_name}) fallback: {e}")
-        self._send_key_event(scancode, is_up=False)
+        action = ACTION_KEY_MAP.get(key_name.lower())
+        if action:
+            self.input_driver.press_action(action)
+        else:
+            self._send_key_event(scancode, is_up=False)
 
     def _send_key_up(self, key_name: str, scancode: int):
         if self.dry_run:
             return
-        if PYDIRECTINPUT_AVAILABLE:
-            try:
-                pydirectinput.keyUp(key_name)
-                return
-            except Exception as e:
-                logger.debug(f"pydirectinput keyUp({key_name}) fallback: {e}")
-        self._send_key_event(scancode, is_up=True)
+        action = ACTION_KEY_MAP.get(key_name.lower())
+        if action:
+            self.input_driver.release_action(action)
+        else:
+            self._send_key_event(scancode, is_up=True)
 
     def _send_click(self, duration: Optional[float] = None):
         if self.dry_run or not self.can_send_input():
             return
-        if PYDIRECTINPUT_AVAILABLE:
-            try:
-                pydirectinput.click(button='left')
-                return
-            except Exception as e:
-                logger.debug(f"pydirectinput click fallback: {e}")
-        self._send_mouse_click()
+        self.input_driver.mouse_click(duration or 0.05)
 
     def decode_and_dispatch(
         self, 
@@ -765,8 +680,7 @@ class InputBridge:
 
     def release_all(self):
         """Cleanly releases all hardware inputs upon termination."""
-        if not self.active_keys and not self.is_walking and not self.is_turning_l and not self.is_turning_r and not self.is_stepping_back:
-            return
+        self.input_driver.release_all()
         for key_char, scancode in [('w', DIK_W), ('a', DIK_A), ('s', DIK_S), ('d', DIK_D), ('left', DIK_LEFT), ('right', DIK_RIGHT)]:
             self._send_key_up(key_char, scancode)
         for key in [DIK_SPACE, DIK_LCONTROL]:

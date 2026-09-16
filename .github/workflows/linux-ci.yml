@@ -1,0 +1,45 @@
+name: Linux Compatibility & Neural Pipeline CI
+
+on:
+  push:
+    branches: [ main, feature/* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-linux:
+    name: Ubuntu CI (X11 & Python 3.10)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Linux System Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y xvfb xdotool wmctrl libgl1-mesa-glx libegl1-mesa
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+          pip install evdev pynput
+
+      - name: Run Platform HAL Unit Tests under Xvfb
+        run: |
+          xvfb-run -a python -m unittest tests/test_platform_hal.py
+
+      - name: Run Full 4-Layer Test Suite under Xvfb
+        run: |
+          xvfb-run -a python -m unittest discover tests
+
+      - name: Run 3D Raycasting Arena Autonomous Simulation (Linux Headless)
+        run: |
+          xvfb-run -a python main.py --mode arena --dry-run --max-steps 30 --no-vis --no-web-stream --cpu

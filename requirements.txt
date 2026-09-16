@@ -12,4 +12,6 @@ mss>=9.0.0
 # caveclient>=5.0.0
 # fafbseg>=2.0.0
 # pandas>=2.0.0
-# pyarrow>=12.0.0
+# Optional: Linux Input Injection (Kernel & User-space)
+# evdev>=1.6.0; sys_platform == "linux"
+# pynput>=1.7.6; sys_platform == "linux"
