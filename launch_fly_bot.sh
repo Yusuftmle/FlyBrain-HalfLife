@@ -36,6 +36,15 @@ fi
 
 echo "[*] Starting MaleCNS v1.0 Fly Connectome Neural Pipeline..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+# Activate virtualenv if present
+if [ -f "venv/bin/activate" ]; then
+    source venv/bin/activate
+elif [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+fi
 
-python3 main.py --mode live --no-dry-run
+if [ $# -gt 0 ]; then
+    python3 main.py "$@"
+else
+    python3 main.py --mode live --no-dry-run
+fi

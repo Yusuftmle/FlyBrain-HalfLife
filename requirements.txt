@@ -1,19 +1,14 @@
 # Core Biological Neural Simulation & Vision Pipeline
 numpy>=1.24.0
 scipy>=1.10.0
+torch>=2.0.0
 opencv-python>=4.8.0
 pillow>=9.5.0
 mss>=9.0.0
 
-# Optional: High-Performance GPU Acceleration (CUDA Sparse Tensors)
-# torch>=2.0.0
+# Linux Input Injection (Kernel evdev & User-space pynput)
+evdev>=1.6.0; sys_platform == "linux"
+pynput>=1.7.6; sys_platform == "linux"
 
-# Optional: FlyWire / MaleCNS Connectome Database Access
-# caveclient>=5.0.0
-# fafbseg>=2.0.0
-# pandas>=2.0.0
-# Optional: Linux Input Injection (Kernel & User-space)
-# evdev>=1.6.0; sys_platform == "linux"
-# pynput>=1.7.6; sys_platform == "linux"
 # Optional: Embedded 3D Game Arena (ViZDoom)
 vizdoom>=1.3.0

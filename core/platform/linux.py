@@ -42,7 +42,11 @@ class LinuxScreenCapture(BaseScreenCapture):
         self.target_title = target_title
         self.window_id: Optional[str] = None
         self.window_rect: Optional[Dict[str, int]] = None
-        self.sct: mss.MSS = mss.MSS()
+        try:
+            self.sct: Optional[mss.MSS] = mss.MSS()
+        except Exception as e:
+            logger.warning(f"LinuxCapture: Could not initialize MSS display connection: {e}")
+            self.sct = None
 
         # Check for Wayland session
         session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
@@ -123,6 +127,9 @@ class LinuxScreenCapture(BaseScreenCapture):
 
     def grab_frame(self) -> Optional[np.ndarray]:
         """Captures active game frame with MSS."""
+        if self.sct is None:
+            return None
+
         # 1. Target Window Capture if bounds known
         if self.window_rect and self.window_rect["width"] >= 100 and self.window_rect["height"] >= 100:
             try:
@@ -225,7 +232,8 @@ class LinuxScreenCapture(BaseScreenCapture):
 
     def close(self):
         try:
-            self.sct.close()
+            if self.sct:
+                self.sct.close()
         except Exception:
             pass
 
