@@ -28,8 +28,9 @@ from data_loader import ConnectomeDataLoader
 from lif_engine import PyTorchLIFEngine
 from vision_bridge import VisionBridge
 from input_bridge import InputBridge
-from reinforcement.dopamine import DopamineController
 from env.arena import HalfLifeArena
+from env.doom_arena import DoomArena, VIZDOOM_AVAILABLE
+from dopamine import DopamineController
 from telemetry.visualizer import FlyBrainVisualizer
 from telemetry.desktop_audio import DesktopAudioPlayer
 from server.broadcast_server import FlyBrainWebBroadcaster
@@ -51,7 +52,7 @@ def run_simulation(args):
     print(f"[*] Execution Mode : {args.mode.upper()}")
     print(f"[*] Visualizer     : {'ENABLED' if not args.no_vis else 'DISABLED (Headless)'}")
     print(f"[*] Web Broadcaster: {'ENABLED (http://localhost:' + str(args.stream_port) + ')' if getattr(args, 'web_stream', True) else 'DISABLED'}")
-    print(f"[*] Hardware Input : {'DRY-RUN (Simulated - Physical Keys Disabled)' if (args.dry_run or args.mode == 'arena') else 'LIVE DIRECTINPUT (PHYSICAL KEYS ACTIVE: W, A, S, D, Mouse)'}")
+    print(f"[*] Hardware Input : {'DRY-RUN (Simulated - Physical Keys Disabled)' if (args.dry_run or args.mode in ['arena', 'doom']) else 'LIVE DIRECTINPUT (PHYSICAL KEYS ACTIVE: W, A, S, D, Mouse)'}")
     if args.record:
         print(f"[*] Video Output   : {args.record}")
     print("-" * 74)
@@ -98,7 +99,7 @@ def run_simulation(args):
         turn_threshold=0.03,
         walk_threshold=0.05,
         attack_threshold=0.35,
-        dry_run=args.dry_run or (args.mode == "arena"), 
+        dry_run=args.dry_run or (args.mode in ["arena", "doom"]), 
         cooldown_duration=0.08,
         target_hwnd=vision_bridge.hwnd if args.mode == "live" else None
     )
@@ -119,7 +120,15 @@ def run_simulation(args):
         broadcaster.start()
 
     # Environment Selection
-    if args.mode == "arena":
+    if args.mode == "doom":
+        if not VIZDOOM_AVAILABLE:
+            print("[!] ViZDoom not installed. Falling back to retro raycaster arena.")
+            arena = HalfLifeArena(width=640, height=480)
+        else:
+            scenario_name = getattr(args, "doom_scenario", "deadly_corridor")
+            arena = DoomArena(scenario=scenario_name, width=640, height=480)
+            print(f"[*] Genuine 3D ViZDoom Arena Active: scenario='{scenario_name}'.")
+    elif args.mode == "arena":
         arena = HalfLifeArena(width=640, height=480)
         print("[*] Autonomous 3D Half-Life Raycasting Arena Active.")
     else:
@@ -207,7 +216,7 @@ def run_simulation(args):
             last_frame_time = t_now
 
             # 1. Low-Latency Frame Capture (<2ms memory grab)
-            if args.mode == "arena":
+            if args.mode in ["arena", "doom"]:
                 game_frame, env_events = arena.step(turn_val, fwd_val, is_attack)
                 for ev in env_events:
                     dopamine.register_event(ev["type"], ev["mag"])
@@ -563,7 +572,8 @@ def run_benchmark(lif_engine: PyTorchLIFEngine, num_neurons: int, num_synapses: 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FlyBrain-HalfLife Autonomous Agent")
-    parser.add_argument("--mode", choices=["arena", "live", "benchmark"], default="live", help="Mode: live (real Half-Life game), arena (built-in 3D test room), benchmark")
+    parser.add_argument("--mode", choices=["arena", "doom", "live", "benchmark"], default="live", help="Mode: live (real Half-Life game), doom (genuine ViZDoom 3D arena), arena (retro raycaster), benchmark")
+    parser.add_argument("--doom-scenario", type=str, default="deadly_corridor", choices=["deadly_corridor", "my_way_home", "defend_the_center", "basic"], help="ViZDoom scenario: deadly_corridor, my_way_home, defend_the_center, basic")
     parser.add_argument("--dry-run", action="store_true", help="Simulate motor commands without sending physical keystrokes")
     parser.add_argument("--no-dry-run", dest="dry_run", action="store_false", help="Explicitly enable live hardware DirectInput scancodes")
     parser.set_defaults(dry_run=False)
