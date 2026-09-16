@@ -408,9 +408,10 @@ def run_simulation(args):
                     input_bridge.toggle_pause()
 
                 # Global Hotkeys (Works even when Half-Life has foreground focus!)
-                try:
-                    user32_hk = ctypes.windll.user32
-                    t_now_hk = time.time()
+                if sys.platform == "win32":
+                    try:
+                        user32_hk = ctypes.windll.user32
+                        t_now_hk = time.time()
                     if (t_now_hk - last_global_hotkey_time) > 0.35:
                         # F8 (0x77): Toggle Lossless MP4 Recording
                         if user32_hk.GetAsyncKeyState(0x77) & 0x8000:

@@ -364,21 +364,25 @@ class InputBridge:
                 "pause_reason": "USER_PAUSED"
             }
             
-        fg = ctypes.windll.user32.GetForegroundWindow()
-        if self.is_allowed_overlay_or_telemetry(fg):
-            self.release_all()
-            self.current_action = "OBSERVING (OVERLAY / TELEMETRY ODAKTA)"
-            return {
-                "turn_diff": 0.0,
-                "forward_rate": 0.0,
-                "backward_rate": 0.0,
-                "attack_rate": 0.0,
-                "action": self.current_action,
-                "is_firing": False,
-                "is_escaping": False,
-                "is_paused": False,
-                "pause_reason": ""
-            }
+        if sys.platform == "win32":
+            try:
+                fg = ctypes.windll.user32.GetForegroundWindow()
+                if self.is_allowed_overlay_or_telemetry(fg):
+                    self.release_all()
+                    self.current_action = "OBSERVING (OVERLAY / TELEMETRY ODAKTA)"
+                    return {
+                        "turn_diff": 0.0,
+                        "forward_rate": 0.0,
+                        "backward_rate": 0.0,
+                        "attack_rate": 0.0,
+                        "action": self.current_action,
+                        "is_firing": False,
+                        "is_escaping": False,
+                        "is_paused": False,
+                        "pause_reason": ""
+                    }
+            except Exception:
+                pass
 
         if not self.is_game_focused():
             self.release_all()
