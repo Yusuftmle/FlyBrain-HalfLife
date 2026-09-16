@@ -1,15 +1,18 @@
 # 🪰 FlyBrain-HalfLife: Connectome-Driven Autonomous Agent in Valve's Half-Life
 
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-blue.svg?logo=linux&logoColor=white)]()
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B%20CUDA-ee4c2c.svg)](https://pytorch.org/)
 [![Connectome](https://img.shields.io/badge/Connectome-MaleCNS%20v1.0%20%2F%20FlyWire-brightgreen.svg)](https://codex.flywire.ai/)
-[![DirectInput](https://img.shields.io/badge/Input-Windows%20DirectInput%20Scancodes-orange.svg)]()
+[![HAL](https://img.shields.io/badge/HAL-evdev%20%2F%20uinput%20%7C%20DirectInput-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-27%2F27%20Passed-success.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-21%2F21%20Passed-success.svg)]()
 
-**FlyBrain-HalfLife** is an end-to-end biological neural simulation that connects a high-fidelity reconstruction of the fruit fly (*Drosophila melanogaster*) central nervous system directly to Valve's **Half-Life** (GoldSrc engine).
+**FlyBrain-HalfLife** is an end-to-end biological neural simulation that connects a high-fidelity reconstruction of the fruit fly (*Drosophila melanogaster*) central nervous system directly to Valve's **Half-Life** (GoldSrc engine) and **ViZDoom**.
 
 Built on the open-source **MaleCNS v1.0** (166,700 neurons, 125M synapses) and **FlyWire** connectomic datasets, FlyBrain does not utilize artificial deep neural networks, transformer policies, or reinforcement learning black boxes. Instead, **every movement, turn, jump, and evasive maneuver is generated entirely by biophysical Leaky Integrate-and-Fire (LIF) circuits**, simulated in real time via sparse GPU/CPU tensor mathematics.
+
+Equipped with a native cross-platform Hardware Abstraction Layer (HAL), FlyBrain operates seamlessly across **Windows** (Win32 GDI & DirectInput scancodes) and **Linux** (kernel-level `evdev` / `/dev/uinput` and user-space X11 drivers).
 
 ---
 
@@ -154,32 +157,38 @@ pip install -r requirements.txt
 
 ## 🎮 Launch Modes
 
-### Option 1: Live Half-Life Gameplay (Interactive Bot)
+### Option 1: Live Half-Life Gameplay (Windows & Linux)
 1. Launch **Half-Life** in windowed or borderless mode (e.g., `-windowed -w 800 -h 600`).
-2. Join any server or start a local multiplayer game (`crossfire`, `bounce`, etc.).
-3. Run:
+2. Join any server or start a local game (`crossfire`, `bounce`, etc.).
+3. **On Windows:**
    ```bash
    run_live.bat
-   ```
-   *Or from terminal:*
-   ```bash
+   # or
    python main.py --mode live --no-dry-run
    ```
-   *(Note: If keyboard inputs are filtered, right-click `run_live.bat` and select **Run as Administrator**).*
+4. **On Linux:**
+   ```bash
+   bash launch_fly_bot.sh
+   # or
+   python3 main.py --mode live --no-dry-run
+   ```
 
-### Option 2: Autonomous 3rd-Person Launcher
-To automatically boot Half-Life in 3rd-person spectator mode and bind FlyBrain:
+### Option 2: Genuine 3D ViZDoom Arena (Built-in Doom Engine)
+Test and observe the connectome inside an authentic 3D ViZDoom environment with scenario selection:
 ```bash
-launch_fly_bot.bat
-```
+# Windows launcher
+run_doom.bat
 
-### Option 3: Built-in 3D FPS Arena (No Game Required)
-Test and observe the neural connectome inside our built-in retro raycasting FPS arena:
+# Terminal (Windows / Linux)
+python main.py --mode doom --doom-scenario deadly_corridor
+```
+*Supported scenarios: `deadly_corridor`, `my_way_home`, `defend_the_center`, `basic`.*
+
+### Option 3: Built-in 3D Retro Raycasting Arena (No External Game Needed)
+Test the neural connectome inside our custom DDA raycaster arena with live 2D tactical radar minimap:
 ```bash
 run_arena.bat
-```
-*Or from terminal:*
-```bash
+# or
 python main.py --mode arena
 ```
 
@@ -217,7 +226,7 @@ Because FlyBrain issues genuine hardware scancodes via Windows `SendInput`, comp
 
 ## 🧪 Verification & Unit Testing
 
-FlyBrain includes a 21-test biological verification suite covering data compilation, LIF tensor algebra, optical filtering, and emergency evasions:
+FlyBrain includes a 27-test biological verification suite covering data compilation, LIF tensor algebra, optical filtering, platform HAL drivers, and emergency evasions:
 
 ```bash
 python -m unittest discover tests
@@ -226,7 +235,7 @@ python -m unittest discover tests
 Output:
 ```text
 ----------------------------------------------------------------------
-Ran 21 tests in 1.187s
+Ran 27 tests in 1.736s
 
 OK
 [Connectome] Loaded from cache: 12,260 neurons, 1,518,705 synapses.
