@@ -1,6 +1,8 @@
 """
 Retro 3D FPS Raycasting Arena (Built-in Half-Life/Doom Simulator)
 Enables standalone simulation, training, and visualization without requiring Half-Life installed.
+Features DDA raycasting, textured industrial corridors, Headcrab enemies, health pickups,
+and an integrated 2D tactical radar minimap with route trail tracing.
 """
 import numpy as np
 import cv2
@@ -11,14 +13,14 @@ class TargetEntity:
     def __init__(self, x: float, y: float, entity_type: str = "enemy"):
         self.x = x
         self.y = y
-        self.type = entity_type # "enemy" or "health"
+        self.type = entity_type  # "enemy" or "health"
         self.alive = True
 
 class HalfLifeArena:
     """
     3D Raycasting FPS Simulation Arena.
-    Features Half-Life industrial aesthetics, corridors, hazard collisions,
-    headcrab enemies, and health supply crates.
+    Features Half-Life industrial corridors, hazard collisions,
+    headcrab enemies, health supply crates, and an integrated real-time tactical radar minimap.
     The fly brain perceives this 3D environment and navigates the maze.
     """
     def __init__(self, width: int = 640, height: int = 480):
@@ -46,32 +48,47 @@ class HalfLifeArena:
         ], dtype=np.int32)
         self.map_h, self.map_w = self.map.shape
 
-        # Player State
-        self.player_x = 2.5
-        self.player_y = 2.5
-        self.player_angle = 0.0 # Radians
-        self.fov = math.pi / 3.0 # 60-degree field of view
+        # Player State (Spawn in open corridor at 1.5, 1.5 facing East down hallway)
+        self.player_x = 1.5
+        self.player_y = 1.5
+        self.player_angle = 0.0  # Radians
+        self.fov = math.pi / 3.0  # 60-degree field of view
         self.health = 100.0
         self.score = 0
         self.kills = 0
         self.muzzle_flash_timer = 0
         
+        # Route breadcrumb history (capped at 200 points for trail visualization)
+        self.trail: List[Tuple[float, float]] = [(self.player_x, self.player_y)]
+        self._step_counter = 0
+
         # Targets and Pickups
         self.entities: List[TargetEntity] = []
         self._spawn_entities()
 
     def _spawn_entities(self):
-        """Spawns enemies and health packs inside the arena."""
+        """Spawns enemies and health packs inside valid walkable spaces."""
         self.entities = [
-            TargetEntity(4.5, 3.5, "enemy"),
+            TargetEntity(4.5, 1.5, "enemy"),
             TargetEntity(9.5, 3.5, "enemy"),
             TargetEntity(3.5, 7.5, "enemy"),
             TargetEntity(10.5, 9.5, "enemy"),
             TargetEntity(13.5, 13.5, "enemy"),
-            TargetEntity(7.5, 11.5, "enemy"),
+            TargetEntity(6.5, 11.5, "enemy"),
             TargetEntity(1.5, 5.5, "health"),
             TargetEntity(14.5, 1.5, "health")
         ]
+
+    def _is_walkable(self, x: float, y: float, radius: float = 0.22) -> bool:
+        """Collision check preventing camera from clipping flush against walls."""
+        for dx in [-radius, radius]:
+            for dy in [-radius, radius]:
+                mx, my = int(x + dx), int(y + dy)
+                if mx < 0 or mx >= self.map_w or my < 0 or my >= self.map_h:
+                    return False
+                if self.map[my, mx] == 1:
+                    return False
+        return True
 
     def step(self, turn_val: float, forward_val: float, is_attack: bool) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
         """
@@ -81,13 +98,14 @@ class HalfLifeArena:
         is_attack: True if firing primary weapon
         """
         events = []
+        self._step_counter += 1
 
         # 1. Yaw Angle Update
         rot_speed = 0.08
         self.player_angle += turn_val * rot_speed
         self.player_angle %= (2 * math.pi)
 
-        # 2. Forward Movement
+        # 2. Forward Movement with sliding collision
         move_speed = 0.12 * min(1.0, max(0.0, forward_val))
         dx = math.cos(self.player_angle) * move_speed
         dy = math.sin(self.player_angle) * move_speed
@@ -95,19 +113,27 @@ class HalfLifeArena:
         new_x = self.player_x + dx
         new_y = self.player_y + dy
 
-        # Collision with solid walls
-        if self.map[int(self.player_y), int(new_x)] == 0:
+        # Slide along X
+        if self._is_walkable(new_x, self.player_y):
             self.player_x = new_x
         else:
-            events.append({"type": "damage", "mag": 0.2})
-            
-        if self.map[int(new_y), int(self.player_x)] == 0:
+            events.append({"type": "damage", "mag": 0.08})
+
+        # Slide along Y
+        if self._is_walkable(self.player_x, new_y):
             self.player_y = new_y
         else:
-            events.append({"type": "damage", "mag": 0.2})
+            events.append({"type": "damage", "mag": 0.08})
 
         if move_speed > 0.04:
             events.append({"type": "forward", "mag": 0.05})
+
+        # Record route breadcrumbs every 3 frames
+        if self._step_counter % 3 == 0:
+            if not self.trail or math.hypot(self.player_x - self.trail[-1][0], self.player_y - self.trail[-1][1]) > 0.04:
+                self.trail.append((self.player_x, self.player_y))
+                if len(self.trail) > 150:
+                    self.trail.pop(0)
 
         # 3. Fire and Hit Target
         if is_attack:
@@ -164,17 +190,30 @@ class HalfLifeArena:
         return False
 
     def _render_frame(self) -> np.ndarray:
-        """Renders 3D perspective projection via DDA raymarching."""
+        """Renders 3D perspective projection via DDA raymarching with textures & radar."""
         frame = np.zeros((self.h, self.w, 3), dtype=np.uint8)
-        
-        # Ceiling and Floor
-        frame[:self.h//2, :] = [30, 25, 35]
-        frame[self.h//2:, :] = [45, 55, 65]
 
-        num_rays = 120
+        # 1. Ceiling (Industrial dark metal gradient)
+        ceiling_grad = np.linspace(24, 10, self.h // 2, dtype=np.uint8)
+        frame[:self.h//2, :, 0] = ceiling_grad[:, None]
+        frame[:self.h//2, :, 1] = (ceiling_grad * 0.9).astype(np.uint8)[:, None]
+        frame[:self.h//2, :, 2] = (ceiling_grad * 0.85).astype(np.uint8)[:, None]
+
+        # 2. Floor (Textured concrete gradient with perspective lines)
+        floor_grad = np.linspace(25, 60, self.h - self.h // 2, dtype=np.uint8)
+        frame[self.h//2:, :, 0] = (floor_grad * 0.85).astype(np.uint8)[:, None]
+        frame[self.h//2:, :, 1] = (floor_grad * 0.95).astype(np.uint8)[:, None]
+        frame[self.h//2:, :, 2] = floor_grad[:, None]
+
+        # Floor grid lines for motion feedback
+        for line_y in range(self.h // 2 + 15, self.h, 25):
+            cv2.line(frame, (0, line_y), (self.w, line_y), (35, 42, 48), 1)
+
+        # 3. DDA Raycaster
+        num_rays = 240
         ray_step = self.fov / num_rays
         start_angle = self.player_angle - self.fov / 2.0
-        slice_w = self.w // num_rays + 1
+        slice_w = max(1, math.ceil(self.w / num_rays))
 
         z_buffer = [999.0] * num_rays
 
@@ -183,35 +222,90 @@ class HalfLifeArena:
             sin_a = math.sin(angle)
             cos_a = math.cos(angle)
 
-            dist = 0.05
-            hit_wall = False
-            while dist < 16.0:
-                cx = self.player_x + cos_a * dist
-                cy = self.player_y + sin_a * dist
-                map_x, map_y = int(cx), int(cy)
+            # DDA Step
+            map_x = int(self.player_x)
+            map_y = int(self.player_y)
+
+            delta_dist_x = abs(1.0 / (cos_a + 1e-9))
+            delta_dist_y = abs(1.0 / (sin_a + 1e-9))
+
+            if cos_a < 0:
+                step_x = -1
+                side_dist_x = (self.player_x - map_x) * delta_dist_x
+            else:
+                step_x = 1
+                side_dist_x = (map_x + 1.0 - self.player_x) * delta_dist_x
+
+            if sin_a < 0:
+                step_y = -1
+                side_dist_y = (self.player_y - map_y) * delta_dist_y
+            else:
+                step_y = 1
+                side_dist_y = (map_y + 1.0 - self.player_y) * delta_dist_y
+
+            hit = False
+            side = 0
+            while not hit:
+                if side_dist_x < side_dist_y:
+                    side_dist_x += delta_dist_x
+                    map_x += step_x
+                    side = 0
+                else:
+                    side_dist_y += delta_dist_y
+                    map_y += step_y
+                    side = 1
+
                 if 0 <= map_x < self.map_w and 0 <= map_y < self.map_h:
                     if self.map[map_y, map_x] == 1:
-                        hit_wall = True
-                        break
-                dist += 0.08
+                        hit = True
+                else:
+                    hit = True
 
-            corrected_dist = dist * math.cos(angle - self.player_angle)
-            z_buffer[i] = corrected_dist
+            if side == 0:
+                perp_dist = (map_x - self.player_x + (1 - step_x) / 2) / (cos_a + 1e-9)
+                wall_x = self.player_y + perp_dist * sin_a
+            else:
+                perp_dist = (map_y - self.player_y + (1 - step_y) / 2) / (sin_a + 1e-9)
+                wall_x = self.player_x + perp_dist * cos_a
 
-            wall_h = int(self.h / (corrected_dist + 1e-4))
+            wall_x -= math.floor(wall_x)
+            perp_dist = max(0.12, perp_dist)
+            z_buffer[i] = perp_dist
+
+            # Wall height clamped so floor/ceiling always retain perspective
+            raw_wall_h = int((self.h * 0.75) / max(0.35, perp_dist))
+            wall_h = min(int(self.h * 0.94), raw_wall_h)
             top = max(0, self.h // 2 - wall_h // 2)
             bottom = min(self.h - 1, self.h // 2 + wall_h // 2)
 
-            # Distance shading
-            shade = max(0.1, min(1.0, 1.0 - (dist / 14.0)))
-            b = int(70 * shade)
-            g = int(120 * shade)
-            r = int(140 * shade)
+            # Distance Shading and Orientation Shading
+            shade = max(0.12, min(1.0, 1.0 - (perp_dist / 13.0)))
+            if side == 1:
+                shade *= 0.72  # North-South wall darkening for 3D depth
 
-            x_start = i * (self.w // num_rays)
-            cv2.rectangle(frame, (x_start, top), (x_start + slice_w, bottom), (b, g, r), -1)
+            # Industrial wall panel pattern (3 panels per tile)
+            panel_rel = (wall_x * 3.0) % 1.0
+            is_panel_seam = (panel_rel < 0.05) or (panel_rel > 0.95)
+            if is_panel_seam:
+                shade *= 0.60
 
-        # Draw Sprites
+            base_b = int(60 * shade)
+            base_g = int(95 * shade)
+            base_r = int(120 * shade)
+
+            x_start = int(i * (self.w / num_rays))
+            x_end = min(self.w, x_start + slice_w)
+            cv2.rectangle(frame, (x_start, top), (x_end, bottom), (base_b, base_g, base_r), -1)
+
+            # Top and bottom hazard/metal trims on walls
+            trim_h = max(2, int(wall_h * 0.08))
+            if top + trim_h < bottom:
+                cv2.rectangle(frame, (x_start, top), (x_end, top + trim_h), 
+                              (int(base_b * 0.6), int(base_g * 0.6), int(base_r * 0.6)), -1)
+                cv2.rectangle(frame, (x_start, bottom - trim_h), (x_end, bottom), 
+                              (int(base_b * 0.4), int(base_g * 0.4), int(base_r * 0.4)), -1)
+
+        # 4. Draw Sprites (Enemies and Pickups)
         for ent in self.entities:
             if not ent.alive:
                 continue
@@ -225,33 +319,101 @@ class HalfLifeArena:
             while angle_to > math.pi: angle_to -= 2 * math.pi
             while angle_to < -math.pi: angle_to += 2 * math.pi
 
-            if abs(angle_to) < self.fov / 1.5:
+            if abs(angle_to) < self.fov / 1.4:
                 screen_x = int((self.w / 2) + math.tan(angle_to) * (self.w / 2))
-                sprite_size = int(self.h / (dist * 1.2))
+                sprite_size = int(self.h / (dist * 1.1))
                 top_y = self.h // 2 - sprite_size // 2
                 
                 ray_idx = int((screen_x / self.w) * num_rays)
                 if 0 <= ray_idx < num_rays and dist < z_buffer[ray_idx]:
                     if ent.type == "enemy":
-                        # Alien Headcrab Sprite (Red/Orange sphere)
+                        # Alien Headcrab Sprite (Glowing biological hazard)
                         cv2.circle(frame, (screen_x, top_y + sprite_size//2), sprite_size//2, (20, 50, 220), -1)
                         cv2.circle(frame, (screen_x, top_y + sprite_size//2), sprite_size//4, (60, 160, 255), -1)
+                        cv2.circle(frame, (screen_x - sprite_size//6, top_y + sprite_size//3), max(1, sprite_size//10), (255, 255, 255), -1)
                     else:
-                        # Health Supply Crate (Cyan/Green Box)
+                        # Health Supply Crate
                         cv2.rectangle(frame, (screen_x - sprite_size//3, top_y), 
                                       (screen_x + sprite_size//3, top_y + sprite_size), (220, 200, 40), -1)
+                        # Red Cross on crate
+                        cw = max(2, sprite_size // 8)
+                        cv2.line(frame, (screen_x - sprite_size//5, top_y + sprite_size//2), 
+                                 (screen_x + sprite_size//5, top_y + sprite_size//2), (0, 0, 255), cw)
+                        cv2.line(frame, (screen_x, top_y + sprite_size//3), 
+                                 (screen_x, top_y + 2*sprite_size//3), (0, 0, 255), cw)
 
-        # HUD and Crosshair
+        # 5. Crosshair
         cx, cy = self.w // 2, self.h // 2
         cv2.drawMarker(frame, (cx, cy), (0, 255, 255), cv2.MARKER_CROSS, 16, 1)
 
-        # Muzzle Flash
+        # 6. Muzzle Flash
         if self.muzzle_flash_timer > 0:
             cv2.circle(frame, (cx + 60, cy + 80), 35, (80, 220, 255), -1)
             cv2.circle(frame, (cx + 60, cy + 80), 18, (255, 255, 255), -1)
 
-        # Bottom HUD Status
+        # 7. Draw 2D Tactical Radar Minimap (Maze, Trail, FOV, and Entities)
+        self._draw_minimap(frame)
+
+        # 8. Bottom HUD Status
         cv2.putText(frame, f"HEALTH: {int(self.health)}", (20, self.h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         cv2.putText(frame, f"KILLS: {self.kills}", (self.w - 140, self.h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
         return frame
+
+    def _draw_minimap(self, frame: np.ndarray):
+        """Renders top-down 2D radar overlay showing maze layout, trail, FOV cone, and entities."""
+        map_size = 140
+        pad = 12
+        mx0 = self.w - map_size - pad
+        my0 = pad
+        
+        # Semi-transparent dark background
+        sub = frame[my0:my0+map_size, mx0:mx0+map_size]
+        bg = np.full_like(sub, 18)
+        cv2.addWeighted(sub, 0.25, bg, 0.75, 0, sub)
+        cv2.rectangle(frame, (mx0, my0), (mx0+map_size, my0+map_size), (80, 85, 105), 1)
+
+        tile_s = map_size / float(self.map_w)
+
+        # Draw maze walls
+        for r in range(self.map_h):
+            for c in range(self.map_w):
+                if self.map[r, c] == 1:
+                    x1 = int(mx0 + c * tile_s)
+                    y1 = int(my0 + r * tile_s)
+                    x2 = int(mx0 + (c + 1) * tile_s)
+                    y2 = int(my0 + (r + 1) * tile_s)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (75, 80, 95), -1)
+
+        # Draw route trail (breadcrumbs)
+        for i in range(1, len(self.trail)):
+            pt1 = (int(mx0 + self.trail[i-1][0] * tile_s), int(my0 + self.trail[i-1][1] * tile_s))
+            pt2 = (int(mx0 + self.trail[i][0] * tile_s), int(my0 + self.trail[i][1] * tile_s))
+            cv2.line(frame, pt1, pt2, (0, 200, 255), 1)
+
+        # Draw entities
+        for ent in self.entities:
+            if not ent.alive:
+                continue
+            ex = int(mx0 + ent.x * tile_s)
+            ey = int(my0 + ent.y * tile_s)
+            if ent.type == "enemy":
+                cv2.circle(frame, (ex, ey), 3, (0, 0, 255), -1)
+            else:
+                cv2.circle(frame, (ex, ey), 3, (255, 220, 0), -1)
+
+        # Draw player dot and FOV cone
+        px = int(mx0 + self.player_x * tile_s)
+        py = int(my0 + self.player_y * tile_s)
+        
+        cone_len = 16
+        a1 = self.player_angle - self.fov / 2.0
+        a2 = self.player_angle + self.fov / 2.0
+        p_fov1 = (int(px + math.cos(a1) * cone_len), int(py + math.sin(a1) * cone_len))
+        p_fov2 = (int(px + math.cos(a2) * cone_len), int(py + math.sin(a2) * cone_len))
+        cv2.line(frame, (px, py), p_fov1, (0, 255, 255), 1)
+        cv2.line(frame, (px, py), p_fov2, (0, 255, 255), 1)
+        cv2.circle(frame, (px, py), 4, (0, 255, 0), -1)
+
+        # Minimap title
+        cv2.putText(frame, "RADAR", (mx0 + 6, my0 + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 185, 200), 1)

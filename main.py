@@ -120,7 +120,7 @@ def run_simulation(args):
 
     # Environment Selection
     if args.mode == "arena":
-        arena = HalfLifeArena(width=640, height=360)
+        arena = HalfLifeArena(width=640, height=480)
         print("[*] Autonomous 3D Half-Life Raycasting Arena Active.")
     else:
         arena = None
