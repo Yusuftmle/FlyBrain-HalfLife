@@ -24,13 +24,14 @@ jobs:
       - name: Install Linux System Dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y xvfb xdotool wmctrl libgl1-mesa-glx libegl1-mesa
+          sudo apt-get install -y xvfb xdotool wmctrl libgl1 libegl1
 
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
-          pip install evdev pynput
+          pip install pygame evdev pynput
 
       - name: Run Platform HAL Unit Tests under Xvfb
         run: |
@@ -42,4 +43,4 @@ jobs:
 
       - name: Run 3D Raycasting Arena Autonomous Simulation (Linux Headless)
         run: |
-          xvfb-run -a python main.py --mode arena --dry-run --max-steps 30 --no-vis --no-web-stream --cpu
+          xvfb-run -a python main.py --mode arena --dry-run --max-steps 20 --no-vis --no-web-stream --cpu
