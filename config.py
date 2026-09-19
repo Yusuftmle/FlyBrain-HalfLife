@@ -69,8 +69,8 @@ class ReinforcementConfig:
     kill_reward: float = 2.0           # Positive dopamine impulse upon target kill
     forward_reward: float = 0.1        # Small positive reward for forward exploration
     
-    # Fast Obstacle Anti-Stuck & Panic Mode (10 steps = ~0.4s threshold)
-    stuck_threshold_steps: int = 10    # Fast responsive obstacle deadlock detection threshold
+    # Obstacle Anti-Stuck & Panic Mode (45 steps = ~1.5s threshold)
+    stuck_threshold_steps: int = 45    # Obstacle deadlock detection threshold (~1.5s)
     panic_noise_strength: float = 24.0 # Chaotic burst current injected during panic
     panic_duration_steps: int = 15     # Duration of panic mode escape state (steps)
 

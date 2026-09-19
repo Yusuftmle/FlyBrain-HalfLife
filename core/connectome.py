@@ -176,8 +176,13 @@ class FlyConnectome:
             cols.extend(dst_indices)
             weights.extend(w)
 
-        # 1. Photoreceptors -> Optic Lobe (Retinotopic feedforward)
-        connect_layers(pr_start, pr_count, ol_start, ol_count, p_connect=0.04, weight_mean=0.8, weight_std=0.2)
+        # 1. Photoreceptors -> Optic Lobe (Ipsilateral feedforward per eye)
+        half_pr = pr_count // 2
+        half_ol = ol_count // 2
+        # Left Eye -> Left Optic Lobe
+        connect_layers(pr_start, half_pr, ol_start, half_ol, p_connect=0.04, weight_mean=0.8, weight_std=0.2)
+        # Right Eye -> Right Optic Lobe
+        connect_layers(pr_start + half_pr, half_pr, ol_start + half_ol, half_ol, p_connect=0.04, weight_mean=0.8, weight_std=0.2)
 
         # 2. Optic Lobe -> Central Complex (Motion & heading integration)
         connect_layers(ol_start, ol_count, cx_start, cx_count, p_connect=0.03, weight_mean=0.7, weight_std=0.2)
@@ -194,9 +199,14 @@ class FlyConnectome:
         # 6. Dopaminergic PPL1 -> MBON / KC Junction
         connect_layers(dop_start, dop_count, mbon_start, mbon_count, p_connect=0.12, weight_mean=0.4, weight_std=0.1)
 
-        # 7. CX & MBON -> Descending Motor Neurons (DNp20 & DNpe017)
+        # 7. CX & MBON -> Descending Motor Neurons (Functional valence routing)
         connect_layers(cx_start, cx_count, dn_start, dn_count, p_connect=0.06, weight_mean=0.9, weight_std=0.25)
-        connect_layers(mbon_start, mbon_count, dn_start, dn_count, p_connect=0.10, weight_mean=1.1, weight_std=0.3)
+        half_mbon = mbon_count // 2
+        # Avoidance MBON -> MDN (backward) and DNp20 (turn away)
+        connect_layers(mbon_start, half_mbon, dn_start + 4, 4, p_connect=0.15, weight_mean=1.2, weight_std=0.3)
+        connect_layers(mbon_start, half_mbon, dn_start, 2, p_connect=0.10, weight_mean=1.0, weight_std=0.2)
+        # Approach MBON -> DNpe017 (forward walking)
+        connect_layers(mbon_start + half_mbon, half_mbon, dn_start + 2, 2, p_connect=0.20, weight_mean=1.3, weight_std=0.3)
 
         # 8. Feedback and lateral inhibition
         connect_layers(ol_start, ol_count, ol_start, ol_count, p_connect=0.015, weight_mean=0.6, weight_std=0.2, is_excitatory=False)

@@ -90,6 +90,7 @@ class PyTorchLIFEngine:
         self.baseline_plastic_weights: Optional[torch.Tensor] = None
         self.plastic_pre: Optional[torch.Tensor] = None
         self.plastic_post: Optional[torch.Tensor] = None
+        self.plastic_valence_sign: Optional[torch.Tensor] = None
 
     @property
     def spikes(self) -> np.ndarray:
@@ -257,10 +258,16 @@ class PyTorchLIFEngine:
             self.torch_v += torch.randn(self.num_neurons, device=self.device) * 2.0
             logger.info("⚡ [DEFIBRILLATION] Resuscitation burst delivered. Brain re-awakened!")
 
-    def init_plastic_synapses(self, pre_indices: np.ndarray, post_indices: np.ndarray):
+    def init_plastic_synapses(
+        self, 
+        pre_indices: np.ndarray, 
+        post_indices: np.ndarray,
+        post_valences: Optional[np.ndarray] = None
+    ):
         """
         Identifies plastic Kenyon Cell (KC) -> MBON synapses for associative learning.
         Tracks baseline efficacy to enforce biological [0.1x, 2.0x] bounding.
+        Supports valence sign differentiation (Avoidance: -1.0, Approach: +1.0).
         """
         coo_indices = self.torch_W.indices() # 2 x nnz
         coo_values = self.torch_W.values()   # nnz
@@ -280,39 +287,68 @@ class PyTorchLIFEngine:
             self.baseline_plastic_weights = self.plastic_weights.clone()
             self.plastic_pre = torch.tensor(rows[plastic_idx], dtype=torch.long, device=self.device)
             self.plastic_post = torch.tensor(cols[plastic_idx], dtype=torch.long, device=self.device)
+
+            if post_valences is not None:
+                val_dict = {int(idx): float(val) for idx, val in zip(post_indices, post_valences)}
+                edge_valences = [val_dict.get(int(cols[i]), 1.0) for i in plastic_idx]
+                self.plastic_valence_sign = torch.tensor(edge_valences, dtype=torch.float32, device=self.device)
+            else:
+                self.plastic_valence_sign = torch.ones(len(plastic_idx), dtype=torch.float32, device=self.device)
+
             logger.info(f"Initialized {len(plastic_idx):,} plastic KC -> MBON synapses for STDP learning.")
         else:
             self.plastic_edge_indices = None
+            self.plastic_valence_sign = None
             logger.info("No matching KC -> MBON edges found for plastic initialization.")
 
-    def apply_stdp_update(self, dopamine: float, eta: float = 0.002):
+    def apply_stdp_update(self, dopamine: float, eta: float = 0.002, extinction_rate: float = 0.0001):
         """
         Applies 3-factor Hebbian STDP update on Kenyon Cell -> MBON synapses:
-        dW = eta * dopamine * S_pre * S_post
+        dW = eta * dopamine * S_pre * S_post * valence_sign
         Clamps efficacy within [0.1x, 2.0x] baseline (matching DOOMFLY specification).
+        Applies passive extinction toward baseline.
         """
-        if self.plastic_edge_indices is None or abs(dopamine) < 0.02:
+        if self.plastic_edge_indices is None:
             return
-        
+
+        has_da = abs(dopamine) >= 0.02
+        has_extinction = (extinction_rate > 0 and self.step_count % 10 == 0)
+
+        if not has_da and not has_extinction:
+            return
+
         with torch.no_grad():
-            rates = torch.as_tensor(self.get_firing_rates(), device=self.device)
-            pre_activity = torch.clamp(rates[self.plastic_pre] + self.torch_spikes[self.plastic_pre], max=1.0)
-            post_activity = torch.clamp(rates[self.plastic_post] + self.torch_spikes[self.plastic_post], max=1.0)
-            co_activity = pre_activity * post_activity
-            
-            activity_signal = co_activity + 0.05 * pre_activity
-            if torch.any(activity_signal > 0) or abs(dopamine) > 0.5:
-                # Modulated by 3-factor Hebbian eligibility trace and dopamine valence
-                effective_signal = torch.clamp(activity_signal, min=0.02 if abs(dopamine) > 0.5 else 0.0)
-                delta_w = eta * float(dopamine) * effective_signal
-                new_weights = self.plastic_weights + delta_w
+            weights_changed = False
+
+            # Passive extinction / decay toward baseline
+            if has_extinction:
+                self.plastic_weights += extinction_rate * (self.baseline_plastic_weights - self.plastic_weights)
+                self.plastic_weights = torch.clamp(
+                    self.plastic_weights, 
+                    min=0.1 * self.baseline_plastic_weights, 
+                    max=2.0 * self.baseline_plastic_weights
+                )
+                weights_changed = True
+
+            if has_da:
+                rates = torch.as_tensor(self.get_firing_rates(), device=self.device)
+                pre_activity = torch.clamp(rates[self.plastic_pre] + self.torch_spikes[self.plastic_pre], max=1.0)
+                post_activity = torch.clamp(rates[self.plastic_post] + self.torch_spikes[self.plastic_post], max=1.0)
+                co_activity = pre_activity * post_activity
                 
-                # Enforce biological sign and clamp efficacy to [0.1, 2.0] of baseline
-                lower_bound = 0.1 * self.baseline_plastic_weights
-                upper_bound = 2.0 * self.baseline_plastic_weights
-                self.plastic_weights = torch.clamp(new_weights, min=lower_bound, max=upper_bound)
-                
-                # Write back into torch_W and update cached torch_WT
+                activity_signal = co_activity + 0.05 * pre_activity
+                if torch.any(activity_signal > 0) or abs(dopamine) > 0.5:
+                    effective_signal = torch.clamp(activity_signal, min=0.02 if abs(dopamine) > 0.5 else 0.0)
+                    valence_multiplier = self.plastic_valence_sign if self.plastic_valence_sign is not None else 1.0
+                    delta_w = eta * float(dopamine) * effective_signal * valence_multiplier
+                    new_weights = self.plastic_weights + delta_w
+                    
+                    lower_bound = 0.1 * self.baseline_plastic_weights
+                    upper_bound = 2.0 * self.baseline_plastic_weights
+                    self.plastic_weights = torch.clamp(new_weights, min=lower_bound, max=upper_bound)
+                    weights_changed = True
+
+            if weights_changed:
                 coo_indices = self.torch_W.indices()
                 coo_values = self.torch_W.values().clone()
                 coo_values[self.plastic_edge_indices] = self.plastic_weights

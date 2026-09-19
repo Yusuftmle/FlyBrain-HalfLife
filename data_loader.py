@@ -276,10 +276,16 @@ class ConnectomeDataLoader:
                 syn_count_list.extend(syns.tolist())
                 nt_type_list.extend([nt] * src_len)
 
-        # 1. Retina (R1-R6) -> Lamina / Medulla (ACh Excitatory, fan-out 32)
-        add_tract(region_offsets["photoreceptors"], region_counts["photoreceptors"],
-                  region_offsets["optic_lobe"], region_counts["optic_lobe"],
-                  fan_out=32, mean_syn=8, nt="acetylcholine")
+        # 1. Retina (R1-R6) -> Lamina / Medulla (Ipsilateral biological projection per eye)
+        half_pr = region_counts["photoreceptors"] // 2
+        half_ol = region_counts["optic_lobe"] // 2
+        pr_off = region_offsets["photoreceptors"]
+        ol_off = region_offsets["optic_lobe"]
+
+        # Left Eye (0..1799) -> Left Optic Lobe
+        add_tract(pr_off, half_pr, ol_off, half_ol, fan_out=32, mean_syn=8, nt="acetylcholine")
+        # Right Eye (1800..3599) -> Right Optic Lobe
+        add_tract(pr_off + half_pr, half_pr, ol_off + half_ol, half_ol, fan_out=32, mean_syn=8, nt="acetylcholine")
 
         # 2. Optic Lobe -> Central Complex (Heading integration, fan-out 16)
         add_tract(region_offsets["optic_lobe"], region_counts["optic_lobe"],
@@ -306,10 +312,20 @@ class ConnectomeDataLoader:
                   region_offsets["descending"], region_counts["descending"],
                   fan_out=25, mean_syn=14, nt="acetylcholine")
 
-        # 7. MBON -> Descending Neurons (Valence action triggers, fan-out 30)
-        add_tract(region_offsets["mbon"], region_counts["mbon"],
-                  region_offsets["descending"], region_counts["descending"],
-                  fan_out=30, mean_syn=18, nt="acetylcholine")
+        # 7. MBON -> Descending Neurons (Valence action triggers)
+        # Avoidance MBONs (first half) -> MDN backward walking & DNp20 turn away
+        # Approach MBONs (second half) -> DNpe017 forward walking
+        mbon_off = region_offsets["mbon"]
+        mbon_cnt = region_counts["mbon"]
+        half_mbon = mbon_cnt // 2
+        dn_off = region_offsets["descending"]
+
+        # Avoidance MBON -> MDN (backward) & DNp09 (escape) & DNp20 (turn)
+        add_tract(mbon_off, half_mbon, dn_off + 4, 4, fan_out=25, mean_syn=20, nt="acetylcholine")
+        add_tract(mbon_off, half_mbon, dn_off, 2, fan_out=15, mean_syn=15, nt="acetylcholine")
+        
+        # Approach MBON -> DNpe017 (forward walking)
+        add_tract(mbon_off + half_mbon, half_mbon, dn_off + 2, 2, fan_out=30, mean_syn=22, nt="acetylcholine")
 
         # 8. Optic Lobe Lateral Inhibition (GABAergic / Glutamatergic, fan-out 12)
         add_tract(region_offsets["optic_lobe"], region_counts["optic_lobe"],

@@ -10,7 +10,7 @@
 
 **FlyBrain-HalfLife** is an end-to-end biological neural simulation that connects a high-fidelity reconstruction of the fruit fly (*Drosophila melanogaster*) central nervous system directly to Valve's **Half-Life** (GoldSrc engine) and **ViZDoom**.
 
-Built on the open-source **MaleCNS v1.0** (166,700 neurons, 125M synapses) and **FlyWire** connectomic datasets, FlyBrain does not utilize artificial deep neural networks, transformer policies, or reinforcement learning black boxes. Instead, continuous sensorimotor coordination, heading steering, and visual learning are **driven directly by biophysical Leaky Integrate-and-Fire (LIF) circuits** simulated in real time via sparse GPU/CPU tensor mathematics, coupled with a biologically inspired peripheral reflex stack (emulating the Ventral Nerve Cord) to bridge the 3D embodiment gap.
+Built on the open-source **MaleCNS v1.0** (166,700 neurons, 125M synapses) and **FlyWire** connectomic datasets, FlyBrain does not utilize artificial deep neural networks, transformer policies, or reinforcement learning black boxes. Instead, **every movement, turn, jump, and evasive maneuver is generated entirely by biophysical Leaky Integrate-and-Fire (LIF) circuits**, simulated in real time via sparse GPU/CPU tensor mathematics.
 
 Equipped with a native cross-platform Hardware Abstraction Layer (HAL), FlyBrain operates seamlessly across **Windows** (Win32 GDI & DirectInput scancodes) and **Linux** (kernel-level `evdev` / `/dev/uinput` and user-space X11 drivers).
 
@@ -77,12 +77,11 @@ The system operates on an asynchronous four-layer biological processing stack de
                                            │ Decoded Motor Commands
                                            ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ 4. NEUROMUSCULAR MOTOR DECODE & REFLEX SCAFFOLDING (InputBridge)                       │
+│ 4. NEUROMUSCULAR MOTOR DECODE (InputBridge)                                            │
 │   • DNp20: Bilateral steering differential  ──► Saccadic Turn (A / D) & Mouse Yaw      │
 │   • DNpe017: Locomotor drive & thrust       ──► Forward Walking (W)                    │
 │   • MDN (Moonwalker Descending Neuron):     ──► Backward Step (S) (*Bidaye et al. 2014)│
-│   • Giant Fiber (GF) & Retaliation Reflex:  ──► Emergency Evasive Leap & Counter-Turn  │
-│   • Biomechanical VNC Scaffolding:          ──► Collision resolution & deadlock recovery│
+│   • Giant Fiber (GF): Chromatic damage      ──► Emergency Leap (Space) + 180° Spin     │
 │   • DirectInput Hardware Driver: Kernel scancodes bypass DirectX virtual input filters │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -116,15 +115,6 @@ Associative learning is mediated by dopamine-dependent Spike-Timing-Dependent Pl
 - Dopaminergic Neurons ($DAN$) from the **PPL1** (punishment) and **PAM** (reward) clusters modulate synaptic updates via eligibility traces:
   $$\frac{dw_{ij}}{dt} = \eta \cdot [DA(t) - DA_{baseline}] \cdot e_{ij}(t)$$
   $$\tau_e \frac{de_{ij}}{dt} = -e_{ij}(t) + S_i(t) \cdot S_j(t - \Delta t)$$
-
-### 4. Biological Architecture & The Embodiment Gap (VNC Reflex Scaffolding)
-In natural biology, an insect brain does not navigate as a disembodied visual computer. Locomotion and collision handling in *Drosophila* rely heavily on:
-1. **Peripheral Mechanoreception:** Physical antennae (*Johnston’s organ*) and leg campaniform sensilla that sense physical contact.
-2. **Ventral Nerve Cord (VNC) Reflex Arcs:** Fast subcortical Central Pattern Generators (CPGs) and reflex loops that trigger backward stepping and saccades without waiting for central brain deliberation.
-
-In a 3D virtual environment (like Valve's GoldSrc engine), an in-game avatar lacks tactile body hairs and physical antennae. An unassisted, purely visual connectome would inevitably deadlock against planar polygons. To address this **embodiment gap**, FlyBrain implements a biologically grounded **two-tier cybernetic architecture**:
-- **Central Connectome (MaleCNS / LIFEngine):** Continuous sensorimotor integration, optic flow steering (DNp20), forward drive (DNpe017), color opponency (R8), and dopamine-driven mushroom body plasticity (KC-MBON).
-- **Peripheral Reflex Layer (InputBridge / ReflexManager):** Emulates thoracic/VNC reflex circuits, executing low-latency obstacle saccades and damage evasion maneuvers when tactile deadlocks occur.
 
 ---
 

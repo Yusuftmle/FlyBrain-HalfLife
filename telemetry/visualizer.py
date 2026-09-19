@@ -360,14 +360,22 @@ class FlyBrainVisualizer:
         bx = self.game_w
         by = self.top_bar_h + self.brain_h
         
-        # 1. Retina Ommatidia Viewport
+        # 1. Unified Compound Eyes Viewport with Subtle Center Hairline
         rx = bx + 22
         ry = by + int(42 * self.scale_factor)
-        rw = int(125 * self.scale_factor)
-        rh = int(125 * self.scale_factor)
+        rw = int(140 * self.scale_factor)
+        rh = int(120 * self.scale_factor)
+
+        # Full ommatidial retina surface scaled into single modern frame
         retina_scaled = cv2.resize(retina_vis, (rw, rh), interpolation=cv2.INTER_NEAREST)
         canvas[ry:ry+rh, rx:rx+rw] = retina_scaled
-        cv2.rectangle(canvas, (rx, ry), (rx+rw, ry+rh), (45, 48, 62), 1)
+
+        # Outer sleek frame border
+        cv2.rectangle(canvas, (rx, ry), (rx+rw, ry+rh), (45, 52, 72), 1)
+
+        # Subtle, elegant hairline center divider (L | R optic septum)
+        mid_x = rx + rw // 2
+        cv2.line(canvas, (mid_x, ry + 1), (mid_x, ry + rh - 1), (50, 58, 75), 1)
 
         # 2. Gauges & Meters Column
         gx = rx + rw + int(24 * self.scale_factor)
@@ -420,15 +428,29 @@ class FlyBrainVisualizer:
             cv2.rectangle(canvas, (bar_mid + da_px, gy + 17), (bar_mid, gy + 15 + bar_h), da_col, -1)
         cv2.line(canvas, (bar_mid, gy + 14), (bar_mid, gy + 18 + bar_h), (255, 255, 255), 1)
 
+        # Meter E: Mushroom Body Valence (Bipolar: AVOIDANCE < 0 < APPROACH)
+        mb_data = motor_info.get("mushroom_body", {}) or rl_info.get("mushroom_body", {})
+        mb_valence = float(mb_data.get("valence", 0.0))
+        gy += int(32 * self.scale_factor)
+        cv2.rectangle(canvas, (gx, gy + 16), (gx + bar_len, gy + 16 + bar_h), (18, 19, 28), -1)
+        cv2.rectangle(canvas, (gx, gy + 16), (gx + bar_len, gy + 16 + bar_h), (40, 44, 58), 1)
+        mb_px = int(np.clip(mb_valence * (bar_len // 2), -bar_len // 2, bar_len // 2))
+        mb_col = (50, 230, 80) if mb_valence > 0.05 else ((40, 60, 255) if mb_valence < -0.05 else (140, 140, 140))
+        if mb_px > 0:
+            cv2.rectangle(canvas, (bar_mid, gy + 17), (bar_mid + mb_px, gy + 15 + bar_h), mb_col, -1)
+        else:
+            cv2.rectangle(canvas, (bar_mid + mb_px, gy + 17), (bar_mid, gy + 15 + bar_h), mb_col, -1)
+        cv2.line(canvas, (bar_mid, gy + 14), (bar_mid, gy + 18 + bar_h), (255, 255, 255), 1)
+
         # 3. Live Biological Circuit Legend Badges
-        cy = by + int(self.hud_h * 0.58)
+        cy = by + int(self.hud_h * 0.65)
         badges = [
             ("RETINA", (255, 225, 0), True),
             ("OPTIC LOBE", (255, 65, 200), abs(turn_diff) > 0.03),
             ("COMPASS", (15, 195, 255), abs(turn_diff) > 0.03),
-            ("MUSHROOM", (55, 240, 45), da_level > 0.2),
+            ("MUSHROOM", (55, 240, 45), abs(mb_valence) > 0.05 or da_level > 0.2 or mb_data.get("active_kc_count", 0) > 0),
             ("MOTOR VNC", (255, 255, 255), fwd_rate > 0.04 or motor_info.get("is_firing", False)),
-            ("PPL1 DA", (60, 20, 255), da_level > 0.1)
+            ("PPL1 DA", (60, 20, 255), abs(da_level) > 0.1)
         ]
         
         bw_badge = max(80, (self.right_w - 44 - 5 * 8) // len(badges))
@@ -517,9 +539,9 @@ class FlyBrainVisualizer:
         # --- C. HUD HEADERS, LABELS, AND VALUES ---
         cv2.putText(canvas, "NEUROMUSCULAR GAUGES & RETINA PREMOTOR BCI", (bx + 22, by_hud + 22), cv2.FONT_HERSHEY_DUPLEX, 0.52 * self.scale_factor, (210, 215, 235), 1, cv2.LINE_AA)
         
-        # Retina label
-        rw = int(125 * self.scale_factor)
-        cv2.putText(canvas, "RETINA 60x60", (bx + 22 + int(14 * self.scale_factor), by_hud + int(184 * self.scale_factor)), cv2.FONT_HERSHEY_SIMPLEX, 0.45 * self.scale_factor, (140, 150, 175), 1, cv2.LINE_AA)
+        # Dual Compound Eye Label
+        rw = int(140 * self.scale_factor)
+        cv2.putText(canvas, "COMPOUND EYES (L | R)", (bx + 22 + int(4 * self.scale_factor), by_hud + int(178 * self.scale_factor)), cv2.FONT_HERSHEY_SIMPLEX, 0.38 * self.scale_factor, (0, 200, 255), 1, cv2.LINE_AA)
 
         # Gauge Text & Values
         gx = bx + 22 + rw + int(24 * self.scale_factor)
@@ -535,10 +557,24 @@ class FlyBrainVisualizer:
 
         gy += int(36 * self.scale_factor)
         da_val = float(rl_info.get("dopamine_level", 0.0))
-        cv2.putText(canvas, f"PPL1 DOPAMINE:  {da_val:+.2f}", (gx, gy), cv2.FONT_HERSHEY_SIMPLEX, 0.44 * self.scale_factor, (230, 235, 245), 1, cv2.LINE_AA)
+        streak_s = float(rl_info.get("clean_streak", 0.0))
+        sugar_on = bool(rl_info.get("sugar_active", False))
+        streak_str = f" | STREAK: {streak_s:.1f}s" if streak_s > 0.4 else ""
+        if sugar_on:
+            streak_str += " [LB3c SUGAR +25nA]"
+        da_col = (80, 255, 140) if sugar_on else ((100, 220, 255) if da_val > 0.5 else (230, 235, 245))
+        cv2.putText(canvas, f"PPL1 DOPAMINE:  {da_val:+.2f}{streak_str}", (gx, gy), cv2.FONT_HERSHEY_SIMPLEX, 0.44 * self.scale_factor, da_col, 1, cv2.LINE_AA)
+
+        gy += int(32 * self.scale_factor)
+        mb_data = motor_info.get("mushroom_body", {}) or rl_info.get("mushroom_body", {})
+        mb_val = float(mb_data.get("valence", 0.0))
+        mb_pct = float(mb_data.get("active_kc_pct", 5.0))
+        mb_evt = str(mb_data.get("last_event", "IDLE"))
+        mb_col = (60, 245, 120) if mb_val > 0.05 else ((80, 90, 255) if mb_val < -0.05 else (210, 215, 235))
+        cv2.putText(canvas, f"MB VALENCE [{mb_evt}]:  {mb_val:+.2f}  (KC {mb_pct:.0f}%)", (gx, gy), cv2.FONT_HERSHEY_SIMPLEX, 0.42 * self.scale_factor, mb_col, 1, cv2.LINE_AA)
 
         # Circuit Badge Titles
-        cy_badge = by_hud + int(self.hud_h * 0.58)
+        cy_badge = by_hud + int(self.hud_h * 0.65)
         badges = ["RETINA", "OPTIC LOBE", "COMPASS", "MUSHROOM", "MOTOR VNC", "PPL1 DA"]
         bw_badge = max(80, (self.right_w - 44 - 5 * 8) // len(badges))
         

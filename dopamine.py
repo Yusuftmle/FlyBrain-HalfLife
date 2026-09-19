@@ -4,7 +4,7 @@ Simulates Dopaminergic Reinforcement Loop and 2-Second Anti-Stuck Panic Mode
 """
 import numpy as np
 import scipy.sparse as sp
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from config import ReinforcementConfig, DEFAULT_CONFIG
 from core.connectome import FlyConnectome
 from core.lif_engine import LIFEngine
@@ -28,7 +28,7 @@ class DopamineController:
         
         # Dopamine level dynamics
         self.dopamine_level: float = cfg.base_dopamine
-        self.da_decay: float = 0.92
+        self.da_decay: float = 0.95
         
         # Fast Obstacle Anti-Stuck & Panic state tracking
         self.stationary_steps: int = 0
@@ -57,8 +57,12 @@ class DopamineController:
             delta = self.cfg.forward_reward * magnitude
             self.dopamine_level = min(2.0, self.dopamine_level + delta)
             self.total_rewards += delta
+        elif event_type in ["streak", "progress"]:
+            delta = 0.6 * magnitude
+            self.dopamine_level = min(3.5, self.dopamine_level + delta)
+            self.total_rewards += delta
 
-    def update(self, motion_flow: float) -> Tuple[np.ndarray, Dict[str, Any]]:
+    def update(self, motion_flow: float, is_obstacle: Optional[bool] = None) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
         Updates dopamine decay, monitors stationary obstacle state,
         computes PPL1 injection current, and applies 3-factor STDP.
@@ -67,10 +71,26 @@ class DopamineController:
         self.dopamine_level = (self.dopamine_level - self.cfg.base_dopamine) * self.da_decay + self.cfg.base_dopamine
 
         # 2. Obstacle Deadlock Detection (Stationary against wall)
-        if motion_flow < 0.045:
-            self.stationary_steps += 1
+        # Only counts as "stuck" when obstacle is visible AND fly has low optical flow (< 0.00045)
+        # (Filtering out subtle weapon breathing noise of ~0.00015-0.00025)
+        is_stationary = (motion_flow < 0.00045)
+        if is_obstacle is not None:
+            if is_obstacle and is_stationary:
+                # Truly stuck: obstacle ahead AND not moving
+                self.stationary_steps += 1
+            elif is_obstacle and not is_stationary:
+                # Wall visible but still moving (steering around it) — don't increment stuck
+                pass
+            else:
+                # No obstacle — decrement stuck counter fast (recover quickly)
+                self.stationary_steps = max(0, self.stationary_steps - 3)
+                if motion_flow >= 0.00080:
+                    self.register_event("forward", magnitude=0.15)
         else:
-            self.stationary_steps = max(0, self.stationary_steps - 3)
+            if is_stationary:
+                self.stationary_steps += 1
+            else:
+                self.stationary_steps = max(0, self.stationary_steps - 3)
 
         ext_current = np.zeros(self.connectome.total_neurons, dtype=np.float32)
 

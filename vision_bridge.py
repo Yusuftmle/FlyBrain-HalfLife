@@ -52,6 +52,12 @@ class VisionBridge:
         # Elementary Motion Detector State
         self.prev_gray: Optional[np.ndarray] = None
         self.prev_flow: Tuple[float, float] = (0.0, 0.0)
+        self.last_flow_details: Dict[str, float] = {
+            "divergence": 0.0,
+            "v_pitch": 0.0,
+            "v_top": 0.0,
+            "v_bottom": 0.0
+        }
         
         # GoldSrc Red Screen Damage Flash Detector State
         self.red_baseline: Optional[float] = None
@@ -210,9 +216,18 @@ class VisionBridge:
             off_channel = np.maximum(0.0, -temporal_diff) # L2 Darkening / Looming shadow
             temporal_motion = np.clip((on_channel + off_channel) * 2.5, 0.0, 1.0)
 
-        # 5. Composite Visual Stimulus:
-        # Baseline Luminance (0.45) + Spatial Edges (0.25) + L1/L2 Motion (0.20) + R8 Color (0.10)
-        stimulus = 0.45 * gray + 0.25 * spatial_edges + 0.20 * temporal_motion + 0.10 * r8_contrast
+        # 5. Composite Visual Stimulus (High-Contrast R1-R6 Motion & Edge Transduction)
+        # Drosophila R1-R6 ommatidial photoreceptors process pure broadband luminance & edges.
+        # Color (R7/R8) is preserved separately for rewards/telemetry without washing out edge contrast.
+        stimulus = 0.50 * gray + 0.30 * spatial_edges + 0.20 * temporal_motion
+        
+        # Compound-eye ommatidial facet color rendering (biological chromatic representation)
+        retina_color_boost = cv2.convertScaleAbs(resized, alpha=1.25, beta=10)
+        
+        # Grayscale neural stimulus visualization (what the LIF engine actually sees)
+        stim_vis = np.clip(stimulus * 255.0, 0, 255).astype(np.uint8)
+        retina_gray_bgr = cv2.cvtColor(stim_vis, cv2.COLOR_GRAY2BGR)
+        half_w = self.w // 2
         
         # 5.1 Drosophila Optomotor Corridor Centering & Wall Avoidance Reflex
         # Compares visual depth/luminance/variance between Left and Right hemispheres
@@ -220,23 +235,38 @@ class VisionBridge:
         right_eye = gray[:, self.w // 2:]
         left_depth = float(np.var(left_eye) + np.mean(left_eye) * 0.4)
         right_depth = float(np.var(right_eye) + np.mean(right_eye) * 0.4)
-        depth_balance = right_depth - left_depth
+        depth_balance = float(right_depth - left_depth)
         
-        # Center collision zone (flat wall directly in front has near-zero texture variance)
+        # Center collision zone (frontal obstacle proximity calibrated to Half-Life textures)
         center_zone = gray[self.h // 4 : 3 * self.h // 4, self.w // 4 : 3 * self.w // 4]
-        is_obstacle_close = float(np.var(center_zone)) < 0.0006
+        center_edges = float(np.mean(spatial_edges[self.h // 4 : 3 * self.h // 4, self.w // 4 : 3 * self.w // 4]))
+        center_var = float(np.var(center_zone))
+
+        # Dedicated Half-Fence & Low Barrier Detector (ground/waist band)
+        lower_center_edges = float(np.mean(spatial_edges[self.h // 2 : 5 * self.h // 6, self.w // 4 : 3 * self.w // 4]))
+        lower_center_var = float(np.var(gray[self.h // 2 : 5 * self.h // 6, self.w // 4 : 3 * self.w // 4]))
+        is_fence = bool(lower_center_edges > 0.16 and lower_center_var > 0.008)
+
+        # Calibrated frontal obstacle proximity:
+        # A wall is close if texture variance drops (flush against surface, < 0.0028)
+        # OR low edges with low variance (flat texture/corner), OR dense looming edges (> 0.30), OR fence.
+        is_obstacle_close = bool(
+            (center_var < 0.0028)
+            or (center_edges < 0.10 and center_var < 0.0035)
+            or (center_edges > 0.30)
+            or is_fence
+        )
         
         now = time.time()
         if not hasattr(self, "obstacle_divert_dir"):
-            self.obstacle_divert_dir = 0.22
+            self.obstacle_divert_dir = 0.25
             self.last_obstacle_divert_time = 0.0
 
         if is_obstacle_close:
-            # Wall dead ahead: steer away towards whichever hemisphere is more open
-            # If symmetric, maintain consistent avoidance direction for at least 1.4s to complete avoidance turn
-            if abs(depth_balance) < 0.008:
-                if (now - self.last_obstacle_divert_time) > 1.4:
-                    self.obstacle_divert_dir = 0.22 if np.random.rand() > 0.5 else -0.22
+            # Wall or fence dead ahead: steer away towards whichever hemisphere is more open
+            if abs(depth_balance) < 0.02:
+                if (now - self.last_obstacle_divert_time) > 1.0:
+                    self.obstacle_divert_dir = 0.30 if np.random.rand() > 0.5 else -0.30
                     self.last_obstacle_divert_time = now
                 depth_balance = self.obstacle_divert_dir
             if depth_balance >= 0:
@@ -273,27 +303,66 @@ class VisionBridge:
         )
 
         # 6. Biophysical Naka-Rushton Photoreceptor Transduction
-        # I(L) = I_max * (L^n / (L^n + sigma^n))
-        stim_powered = np.power(np.clip(stimulus, 1e-4, 1.0), self.n_hill)
-        sigma_powered = np.power(self.sigma_semi, self.n_hill)
-        mean_currents = self.i_max * (stim_powered / (stim_powered + sigma_powered))
+        # Split into Left Eye (first 1800 ommatidia) and Right Eye (second 1800 ommatidia)
+        # Matches core/connectome.py topology (Left Eye: x=-220, Right Eye: x=+220)
+        half_w = self.w // 2
+        left_stimulus = stimulus[:, :half_w]   # Left visual field (60x30)
+        right_stimulus = stimulus[:, half_w:]  # Right visual field (60x30)
 
-        # 7. Poisson Synaptic Emission Noise
-        # Terminal synaptic release exhibits discrete quantal Poisson variability
-        poisson_noise = np.random.poisson(lam=np.clip(mean_currents * 0.1, 0.01, 10.0)).astype(np.float32)
-        total_currents = mean_currents.flatten() + (poisson_noise.flatten() * 0.5)
-        
+        sigma_powered = np.power(self.sigma_semi, self.n_hill)
+        left_powered = np.power(np.clip(left_stimulus, 1e-4, 1.0), self.n_hill)
+        right_powered = np.power(np.clip(right_stimulus, 1e-4, 1.0), self.n_hill)
+
+        left_mean_currents = self.i_max * (left_powered / (left_powered + sigma_powered))
+        right_mean_currents = self.i_max * (right_powered / (right_powered + sigma_powered))
+
+        # Poisson quantal synaptic noise per eye
+        left_noise = np.random.poisson(lam=np.clip(left_mean_currents * 0.1, 0.01, 10.0)).astype(np.float32)
+        right_noise = np.random.poisson(lam=np.clip(right_mean_currents * 0.1, 0.01, 10.0)).astype(np.float32)
+
+        left_currents = left_mean_currents.flatten() + (left_noise.flatten() * 0.5)
+        right_currents = right_mean_currents.flatten() + (right_noise.flatten() * 0.5)
+
+        # Concatenate: First half = Left Eye, Second half = Right Eye
+        total_currents = np.concatenate([left_currents, right_currents])
         photoreceptor_currents = np.clip(total_currents, 0.0, self.i_max * 1.5).astype(np.float32)
         assert photoreceptor_currents.shape == (self.total_ommatidia,), (
             f"Photoreceptor current shape assertion failed: {photoreceptor_currents.shape} != ({self.total_ommatidia},)"
         )
 
+        # 5.3 Dorsal Light Response (DLR) & Visual Horizon Estimation
+        # In nature, flies assume the sky/ceiling is brighter and has distinct edge gradients.
+        upper_lum = float(np.mean(gray[:self.h // 2, :]))
+        lower_lum = float(np.mean(gray[self.h // 2:, :]))
+        upper_edges = float(np.mean(spatial_edges[:self.h // 2, :]))
+        lower_edges = float(np.mean(spatial_edges[self.h // 2:, :]))
+
+        lum_sum = upper_lum + lower_lum + 1e-4
+        horizon_balance = float((upper_lum - lower_lum) / lum_sum)
+
+        ceiling_score = 0.0
+        if upper_lum > 0.45 and lower_edges < 0.18:
+            ceiling_score = float(np.clip((upper_lum - 0.40) * 1.5 + (0.18 - lower_edges) * 2.0, 0.0, 1.0))
+
+        floor_score = 0.0
+        if lower_lum > upper_lum and upper_edges < 0.12 and lower_edges > 0.22:
+            floor_score = float(np.clip((lower_edges - 0.20) * 2.0, 0.0, 1.0))
+
+        divergence = float(self.last_flow_details.get("divergence", 0.0))
+        v_pitch = float(self.last_flow_details.get("v_pitch", dy))
+
         metrics = {
             "dx": float(dx),
             "dy": float(dy),
             "flow": float(flow_mag),
+            "divergence": float(divergence),
+            "v_pitch": float(v_pitch),
+            "ceiling_score": float(ceiling_score),
+            "floor_score": float(floor_score),
+            "horizon_balance": float(horizon_balance),
             "depth_balance": float(depth_balance),
             "is_obstacle_close": bool(is_obstacle_close),
+            "is_fence": bool(is_fence),
             "is_target_in_crosshair": bool(is_target_in_crosshair),
             "ch_motion": float(ch_motion),
             "ch_edges": float(ch_edges),
@@ -302,7 +371,12 @@ class VisionBridge:
             "r8p_blue": float(r8p_blue_mean),
             "r8y_current": float(r8y_current),
             "r8p_current": float(r8p_current),
-            "mean_photocurrent": float(np.mean(photoreceptor_currents))
+            "mean_photocurrent": float(np.mean(photoreceptor_currents)),
+            "left_eye_current": float(np.mean(left_currents)),
+            "right_eye_current": float(np.mean(right_currents)),
+            "left_eye_bgr": retina_gray_bgr[:, :half_w].copy(),
+            "right_eye_bgr": retina_gray_bgr[:, half_w:].copy(),
+            "retina_color_bgr": retina_gray_bgr
         }
 
         return photoreceptor_currents, metrics
@@ -325,6 +399,28 @@ class VisionBridge:
         dy = float(np.mean(v))
         mag = float(np.mean(np.sqrt(u**2 + v**2)))
 
+        # Optical Flow Helmholtz Decomposition
+        h, w = u.shape
+        u_left = float(np.mean(u[:, :w // 2]))
+        u_right = float(np.mean(u[:, w // 2:]))
+        v_top = float(np.mean(v[:h // 2, :]))
+        v_bottom = float(np.mean(v[h // 2:, :]))
+
+        # Divergence (Looming / Z-Surge expansion)
+        div_x = u_right - u_left
+        div_y = v_bottom - v_top
+        divergence = float(div_x + div_y)
+
+        # Pure Pitch Flow (VS cells common-mode vertical flow)
+        v_pitch = float((v_top + v_bottom) / 2.0)
+
+        self.last_flow_details = {
+            "divergence": divergence,
+            "v_pitch": v_pitch,
+            "v_top": v_top,
+            "v_bottom": v_bottom
+        }
+
         self.prev_gray = current_gray
         self.prev_flow = (dx, dy)
         return dx, dy, mag
@@ -332,20 +428,19 @@ class VisionBridge:
     def detect_damage_flash(
         self, 
         frame_bgr: np.ndarray, 
-        threshold: float = 0.09,
+        threshold: float = 0.08,
         last_shot_time: float = 0.0
     ) -> Tuple[bool, float]:
         """
-        Dual-Mechanism GoldSrc Damage Detection:
-          1. Central Viewport Blood/Damage indicator red chromatic spike (with weapon muzzle flash immunity).
-          2. Bottom-left Health HUD indicator sudden pixel change / drop.
+        GoldSrc Damage Detection: Central Viewport Blood/Damage indicator red chromatic spike.
+        Suppresses player's own weapon muzzle flash.
         Returns (is_damage: bool, intensity: float).
         """
         if frame_bgr is None or frame_bgr.size == 0:
             return False, 0.0
 
         now = time.time()
-        # 1. Weapon Muzzle Flash Immunity Window (ignore own weapon fire)
+        # Weapon Muzzle Flash Immunity Window (ignore own weapon fire)
         is_own_fire = (now - last_shot_time) < 0.38
             
         if self.damage_flash_cooldown > 0:
@@ -377,7 +472,7 @@ class VisionBridge:
                 self.red_baseline = 0.92 * self.red_baseline + 0.08 * mean_r_excess
 
             # Only trigger on real incoming damage; suppress player's own weapon muzzle flash
-            if not is_own_fire and (delta_red > threshold or mean_r_excess > 0.45):
+            if not is_own_fire and (delta_red > threshold or mean_r_excess > 0.40):
                 is_damage = True
 
         if is_damage and (self.damage_flash_cooldown == 0):
