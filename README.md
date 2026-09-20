@@ -226,7 +226,7 @@ Because FlyBrain issues genuine hardware scancodes via Windows `SendInput`, comp
 
 ## 🧪 Verification & Unit Testing
 
-FlyBrain includes a 27-test biological verification suite covering data compilation, LIF tensor algebra, optical filtering, platform HAL drivers, and emergency evasions:
+FlyBrain includes a 60-test biological verification suite covering data compilation, LIF tensor algebra, optical filtering, platform HAL drivers, and emergency evasions:
 
 ```bash
 python -m unittest discover tests
@@ -235,12 +235,12 @@ python -m unittest discover tests
 Output:
 ```text
 ----------------------------------------------------------------------
-Ran 27 tests in 1.736s
+Ran 60 tests in 2.000s
 
 OK
-[Connectome] Loaded from cache: 12,260 neurons, 1,518,705 synapses.
+[Connectome] Loaded from cache: 12,260 neurons, 1,178,827 synapses.
 [LIF Engine] PyTorch Sparse Acceleration enabled. Device: CUDA
-  [OK] Connectome: 12,260 neurons, 1,518,705 synapses.
+  [OK] Connectome: 12,260 neurons, 1,178,827 synapses.
   [OK] Deadlock Prevention: Spontaneous noise maintains active sub-threshold oscillations.
   [OK] Retina AGC: Dynamic balance maintained (Peak: 18.2 nA <= 28.0 nA).
   [OK] Motor Cooldown: Hardware refractory debounce operational.
@@ -256,6 +256,22 @@ OK
 [TEST PASS] Layer 4 (input_bridge): Hardware debounced motor decoding verified.
 [TEST PASS] Obstacle Avoidance: Directional turn and reverse step verified.
 ```
+
+---
+
+## 🤝 Community & Contributors
+
+A massive thank you to our community contributors who help test, optimize, and expand FlyBrain across diverse game engines and platforms!
+
+<p align="center">
+  <a href="https://github.com/huguitocloud">
+    <img src="https://github.com/huguitocloud.png?size=96" width="96px;" alt="huguitocloud" style="border-radius:50%;" />
+    <br />
+    <b>huguitocloud</b>
+  </a>
+</p>
+
+* **[@huguitocloud](https://github.com/huguitocloud)**: Windows `SendInput` driver refactoring, cross-engine testing (Half-Life & GTA Vice City), and the architectural proposal for the `--preset cpu-lite` downscaled connectome.
 
 ---
 
@@ -277,3 +293,4 @@ OK
 ## 📜 License
 
 Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for complete terms and copyright notices.
+
