@@ -3,6 +3,7 @@ locomotion.py - Smooth Locomotion & Steering Controller
 Translates normalized continuous actions into smooth OS input commands without strafe interference.
 """
 import time
+import math
 from typing import Dict, Any, Optional
 import numpy as np
 from core.platform.base import BaseInputDriver, ActionKey
@@ -30,7 +31,9 @@ class LocomotionController:
         turn_deadzone: float = 0.010,
         fire_cooldown: float = 0.35,
         pitch_range_pixels: float = 140.0,
-        enable_strafe: bool = False
+        enable_strafe: bool = False,
+        enable_arrow_keys: bool = False,
+        classic_mode: bool = False
     ):
         self.driver = input_driver
         self.mouse_gain_x = mouse_gain_x
@@ -40,6 +43,8 @@ class LocomotionController:
         self.turn_deadzone = turn_deadzone
         self.fire_cooldown = fire_cooldown
         self.enable_strafe = enable_strafe
+        self.enable_arrow_keys = enable_arrow_keys
+        self.classic_mode = classic_mode
 
         # Biological Virtual Haltere (Gaze Stabilization Reflex)
         self.haltere = VirtualHaltere(
@@ -128,37 +133,94 @@ class LocomotionController:
 
         actions_taken = []
 
-        # 1. Pure Analog Mouse Yaw Steering (MochisRice / DOOMFLY Standard - Zero Screen Shake)
+        # 1. DNp20 Steering Decoder & DNp09 Rapid Saccade
         mouse_dx = 0
         mouse_dy = 0
-        if abs(turn) > self.turn_deadzone:
+        is_obs = bool(action.get("is_obstacle_close", False))
+        dnp09_saccade = float(action.get("dnp09_saccade", 0.0))
+
+        if self.classic_mode:
+            # Classic high-authority mode (5dc63cd compatibility)
+            if abs(turn) > self.turn_deadzone:
+                steer_sign = 1 if turn > 0 else -1
+                gain = int(np.sign(turn) * max(45, abs(turn) * 120))
+                mouse_dx = gain
+                if steer_sign < 0:
+                    actions_taken.append("STEER LEFT")
+                    self.driver.press_action(ActionKey.TURN_LEFT)
+                    self.driver.release_action(ActionKey.TURN_RIGHT)
+                    self.driver.press_action(ActionKey.STRAFE_LEFT)
+                    self.driver.release_action(ActionKey.STRAFE_RIGHT)
+                    self.is_turning_left = True
+                    self.is_turning_right = False
+                else:
+                    actions_taken.append("STEER RIGHT")
+                    self.driver.press_action(ActionKey.TURN_RIGHT)
+                    self.driver.release_action(ActionKey.TURN_LEFT)
+                    self.driver.press_action(ActionKey.STRAFE_RIGHT)
+                    self.driver.release_action(ActionKey.STRAFE_LEFT)
+                    self.is_turning_right = True
+                    self.is_turning_left = False
+            else:
+                self._clear_turn_keys()
+        elif abs(dnp09_saccade) > 0.04:
+            # Check for rapid DNp09 biological Saccade (Channel 7 & 8)
+            saccade_sign = 1 if dnp09_saccade > 0 else -1
+            mouse_dx = int(saccade_sign * np.clip(abs(dnp09_saccade) * 800.0 * (dt / 0.016), 20, 65))
+            if saccade_sign > 0:
+                actions_taken.append(f"DNp09 SACCADE RIGHT (dx={mouse_dx})")
+                if self.enable_strafe:
+                    self.driver.press_action(ActionKey.STRAFE_RIGHT)
+                    self.driver.release_action(ActionKey.STRAFE_LEFT)
+            else:
+                actions_taken.append(f"DNp09 SACCADE LEFT (dx={mouse_dx})")
+                if self.enable_strafe:
+                    self.driver.press_action(ActionKey.STRAFE_LEFT)
+                    self.driver.release_action(ActionKey.STRAFE_RIGHT)
+        elif abs(turn) > self.turn_deadzone:
+            # Continuous DNp20 corridor centering (Channel 1 & 2)
             self.mouse_accum_x += turn * self.mouse_gain_x
             target_dx = int(self.mouse_accum_x)
 
-            # Human-like Slew Rate Limiter: Max 16 pixels/frame acceleration (~1.1 deg/frame at 30 FPS)
-            # Prevents abrupt violent snaps while permitting smooth, decisive corridor cornering up to 36 px/frame
-            max_step = 16
+            # Human-like Slew Rate Limiter: Max 16 px/frame (normal) or 32 px/frame (obstacle evasion)
+            max_step = 32 if is_obs else 16
             clamped_dx = int(np.clip(target_dx, self.last_mouse_dx - max_step, self.last_mouse_dx + max_step))
             clamped_dx = int(np.clip(clamped_dx, -36, 36))
             self.last_mouse_dx = clamped_dx
             self.mouse_accum_x -= clamped_dx
             mouse_dx = clamped_dx
 
-            if turn < 0:
+            steer_sign = 1 if turn > 0 else -1
+            if steer_sign < 0:
                 actions_taken.append("STEER LEFT")
+                if self.enable_arrow_keys:
+                    self.driver.press_action(ActionKey.TURN_LEFT)
+                    self.driver.release_action(ActionKey.TURN_RIGHT)
+                if self.enable_strafe:
+                    self.driver.press_action(ActionKey.STRAFE_LEFT)
+                    self.driver.release_action(ActionKey.STRAFE_RIGHT)
             else:
                 actions_taken.append("STEER RIGHT")
+                if self.enable_arrow_keys:
+                    self.driver.press_action(ActionKey.TURN_RIGHT)
+                    self.driver.release_action(ActionKey.TURN_LEFT)
+                if self.enable_strafe:
+                    self.driver.press_action(ActionKey.STRAFE_RIGHT)
+                    self.driver.release_action(ActionKey.STRAFE_LEFT)
 
-            # In natural fly biology and DOOMFLY: never fight mouse with keyboard arrow keys!
-            self._clear_turn_keys()
+            if not self.enable_arrow_keys and not self.enable_strafe:
+                self._clear_turn_keys()
         else:
-            self.last_mouse_dx = 0
-            self.mouse_accum_x = 0.0
+            # Critically damped exponential deceleration instead of a sudden zero-stop
+            decay = math.exp(-dt / 0.05)
+            self.last_mouse_dx = int(self.last_mouse_dx * decay)
+            self.mouse_accum_x *= decay
+            if abs(self.last_mouse_dx) > 0:
+                mouse_dx = self.last_mouse_dx
             self._clear_turn_keys()
 
         # 1.5 Closed-Loop Gaze: Level horizon (matching DOOMFLY reference: pitch = 0)
         if abs(pitch) > 0.05:
-            # Explicit pitch commanded (direct manual override)
             self.mouse_accum_y += pitch * self.mouse_gain_y
             mouse_dy = int(self.mouse_accum_y)
             self.mouse_accum_y -= mouse_dy
@@ -169,49 +231,54 @@ class LocomotionController:
             elif pitch > 0.05:
                 actions_taken.append("LOOK DOWN")
         else:
-            # Fixed level eye-line horizon (zero pitch jitter)
             mouse_dy = 0
             self.mouse_accum_y = 0.0
 
         if mouse_dx != 0 or mouse_dy != 0:
             self.driver.mouse_move_relative(dx=mouse_dx, dy=mouse_dy)
 
-        # 2. Continuous Locomotor CPG Forward Drive (DOOMFLY / Drosophila biology)
-        # 2. Continuous Locomotor CPG Forward Drive (DOOMFLY / Drosophila biology)
-        # Holds 'W' continuously during locomotion. Backward stepping ('S') requires strong MDN activation (<-0.25).
-        if forward > self.walk_threshold or (self.is_walking and forward > 0.0):
-            if self.is_stepping_back:
-                self.driver.release_action(ActionKey.BACKWARD)
-                self.is_stepping_back = False
-
-            if not self.is_walking:
-                self.driver.press_action(ActionKey.FORWARD)
-                self.is_walking = True
-            actions_taken.append("WALK FORWARD")
-        elif forward < -0.25:
-            # MDN Moonwalker backward stepping (damage / obstacle deadlock)
+        # 2. Continuous Locomotor Forward Drive vs Backward Step
+        if self.classic_mode and is_obs:
+            # Classic mode obstacle close forces backward step
             if self.is_walking:
                 self.driver.release_action(ActionKey.FORWARD)
                 self.is_walking = False
-
             if not self.is_stepping_back:
                 self.driver.press_action(ActionKey.BACKWARD)
                 self.is_stepping_back = True
-            actions_taken.append(f"STEP BACK (MDN {abs(forward):.2f})")
+            actions_taken.append("STEP BACK (OBSTACLE)")
         else:
-            # Neutral / coasting: release forward walk, but DO NOT press backward key!
-            if self.is_walking:
-                self.driver.release_action(ActionKey.FORWARD)
-                self.is_walking = False
-            if self.is_stepping_back:
-                self.driver.release_action(ActionKey.BACKWARD)
-                self.is_stepping_back = False
+            is_backward = (forward < -0.20)
+            if is_backward:
+                if self.is_walking:
+                    self.driver.release_action(ActionKey.FORWARD)
+                    self.is_walking = False
+                if not self.is_stepping_back:
+                    self.driver.press_action(ActionKey.BACKWARD)
+                    self.is_stepping_back = True
+                actions_taken.append("STEP BACK (MDN)")
+            elif forward > self.walk_threshold or (self.is_walking and forward > 0.0):
+                if self.is_stepping_back:
+                    self.driver.release_action(ActionKey.BACKWARD)
+                    self.is_stepping_back = False
+
+                if not self.is_walking:
+                    self.driver.press_action(ActionKey.FORWARD)
+                    self.is_walking = True
+                actions_taken.append("WALK FORWARD")
+            else:
+                if self.is_walking:
+                    self.driver.release_action(ActionKey.FORWARD)
+                    self.is_walking = False
+                if self.is_stepping_back:
+                    self.driver.release_action(ActionKey.BACKWARD)
+                    self.is_stepping_back = False
 
         # 3. Primary Weapon Attack
         did_fire = False
         if is_firing_req:
             if (now - self.last_fire_time) >= self.fire_cooldown:
-                self.driver.mouse_click(duration=0.01)
+                self.driver.mouse_click(duration=0.05)
                 self.last_fire_time = now
                 did_fire = True
                 actions_taken.append("FIRE!")
@@ -224,6 +291,8 @@ class LocomotionController:
             "is_stepping_back": self.is_stepping_back,
             "turn": turn,
             "forward": forward,
+            "mouse_dx": mouse_dx,
+            "mouse_dy": mouse_dy,
             "haltere": self.haltere.get_diagnostics() if hasattr(self, "haltere") else {}
         }
 

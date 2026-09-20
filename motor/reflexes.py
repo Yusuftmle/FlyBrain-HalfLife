@@ -80,12 +80,13 @@ class ReflexManager:
         desc = f"OBSTACLE SACCADE {side} (yaw={flick_dx} + S + {strafe_act.value})"
         return {"action": desc, "flick_dx": flick_dx, "state": self.current_state}
 
-    def trigger_combat_retaliation(self, direction: int = 1, turn_whip: bool = True, flick_pixels: int = 200) -> Dict[str, Any]:
+    def trigger_combat_retaliation(self, direction: int = 1, turn_whip: bool = True, flick_pixels: int = 200, enable_jump: bool = True) -> Dict[str, Any]:
         """
-        Executes immediate combat counter-fire, 180° whip turn, and evasive jump-strafe upon taking damage:
+        Executes immediate combat counter-fire, 180° whip turn, and evasive strafe upon taking damage:
           - Instant yaw whip turn (180° or 140° snap) to face/scan threat source.
           - Rapid counter-fire burst (sustained mouse click).
-          - Evasive backstep + lateral strafe sprint + jump hop to dodge enemy fire.
+          - Evasive backstep + lateral strafe sprint.
+          - Optional jump hop (disabled in game navigation to prevent wall hops).
           - 380ms sustained evasion state.
         """
         now = time.time()
@@ -106,12 +107,15 @@ class ReflexManager:
         # 2. Sustained weapon counter-fire (100ms hold ensures GoldSrc weapon discharges)
         self.driver.mouse_click(duration=0.10)
 
-        # 3. Evasive backstep + lateral strafe sprint + bunnyhop dodge
+        # 3. Evasive backstep + lateral strafe sprint
         self.driver.press_action(ActionKey.BACKWARD)
         strafe_act = ActionKey.STRAFE_RIGHT if direction >= 0 else ActionKey.STRAFE_LEFT
         self.driver.press_action(strafe_act)
-        self.driver.press_action(ActionKey.JUMP)
-        self.active_reflex_keys = [ActionKey.BACKWARD, strafe_act, ActionKey.JUMP]
+        if enable_jump:
+            self.driver.press_action(ActionKey.JUMP)
+            self.active_reflex_keys = [ActionKey.BACKWARD, strafe_act, ActionKey.JUMP]
+        else:
+            self.active_reflex_keys = [ActionKey.BACKWARD, strafe_act]
 
         side = "RIGHT" if direction >= 0 else "LEFT"
         return {

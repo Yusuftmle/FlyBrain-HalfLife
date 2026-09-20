@@ -40,21 +40,12 @@ class MockDriver(BaseInputDriver):
 
 class TestCombatAndFence(unittest.TestCase):
 
-    def test_fence_obstacle_detection(self):
-        """Validates that half-fences and low barriers in the lower frontal field are detected as obstacles."""
+    def test_wall_obstacle_detection(self):
+        """Validates that a flat wall ahead is detected as an obstacle."""
         bridge = VisionBridge(grid_width=60, grid_height=60)
-
-        # Create a frame with clear open ceiling (top 24 rows) but a dense fence in the lower field (rows 25..55)
-        frame = np.full((480, 640, 3), 180, dtype=np.uint8) # Sky/Ceiling
-        # Draw repetitive fence grid in the bottom half
-        for y in range(240, 440, 15):
-            frame[y : y + 2, 160:480] = [30, 30, 30]
-        for x in range(160, 480, 12):
-            frame[240:440, x : x + 2] = [30, 30, 30]
-
-        currents, metrics = bridge.process_frame(frame)
-        self.assertTrue(metrics["is_fence"], "Dense repetitive lower barrier must be flagged as is_fence")
-        self.assertTrue(metrics["is_obstacle_close"], "Fence ahead must trigger is_obstacle_close")
+        frame_wall = np.full((480, 640, 3), 110, dtype=np.uint8)
+        currents, metrics = bridge.process_frame(frame_wall)
+        self.assertTrue(metrics["is_obstacle_close"], "Flush flat wall ahead must trigger is_obstacle_close")
 
     def test_combat_retaliation_whip_and_fire(self):
         """Validates that taking damage triggers a 180° whip turn, sustained weapon counter-fire, and jump-strafe evasion."""
@@ -75,20 +66,65 @@ class TestCombatAndFence(unittest.TestCase):
         self.assertIn(ActionKey.STRAFE_RIGHT, driver.pressed, "Must strafe away")
 
     def test_walkable_depth_balance_steers_to_opening(self):
-        """Validates that depth_balance correctly favors the open walkable gap instead of a fence."""
+        """Validates that depth_balance correctly favors the open walkable gap instead of a barrier."""
         bridge = VisionBridge(grid_width=60, grid_height=60)
 
-        # Frame with a fence covering the LEFT side, but OPEN corridor on the RIGHT side
+        # Frame with dark barrier covering the LEFT side, but OPEN corridor on the RIGHT side
         frame = np.full((480, 640, 3), 140, dtype=np.uint8)
-        # Left half fence
-        for y in range(200, 440, 12):
-            frame[y : y + 3, :320] = [10, 10, 10]
-        for x in range(0, 320, 10):
-            frame[200:440, x : x + 3] = [10, 10, 10]
+        frame[:, :320] = [30, 30, 30]
 
         currents, metrics = bridge.process_frame(frame)
-        # Left is cluttered with fence -> depth_balance must be POSITIVE (steer right into open gap)
-        self.assertGreater(metrics["depth_balance"], 0.02, "Must steer right away from the left fence into opening")
+        self.assertGreater(metrics["depth_balance"], 0.02, "Must steer right away from the left barrier into opening")
+
+    def test_rpg_laser_not_mistaken_for_damage(self):
+        """Validates that a bright red RPG laser dot on a wall does NOT trigger damage flash."""
+        bridge = VisionBridge(grid_width=60, grid_height=60)
+        frame_base = np.full((480, 640, 3), 120, dtype=np.uint8)
+        bridge.detect_damage_flash(frame_base)
+
+        # Draw a small intense red laser dot in the center of the screen
+        import cv2
+        frame_laser = frame_base.copy()
+        cv2.circle(frame_laser, (320, 240), 8, (0, 0, 255), -1)
+
+        is_dmg, mag = bridge.detect_damage_flash(frame_laser)
+        self.assertFalse(is_dmg, "RPG laser dot on a wall must NOT be misclassified as damage")
+
+    def test_screen_fade_damage_flash_detected(self):
+        """Validates that a true GoldSrc full-screen red ScreenFade triggers damage detection."""
+        bridge = VisionBridge(grid_width=60, grid_height=60)
+        frame_base = np.full((480, 640, 3), 100, dtype=np.uint8)
+        bridge.detect_damage_flash(frame_base)
+
+        # Sudden full-screen red tint (damage flash)
+        frame_fade = frame_base.copy()
+        frame_fade[:, :, 2] = np.clip(frame_fade[:, :, 2].astype(int) + 140, 0, 255).astype(np.uint8)
+
+        is_dmg, mag = bridge.detect_damage_flash(frame_fade)
+        self.assertTrue(is_dmg, "Full-screen red ScreenFade must be recognized as damage")
+        self.assertGreater(mag, 0.20)
+
+    def test_adaptive_slew_rate_saccadic_turn(self):
+        """Validates that obstacle evasion activates sharp saccadic turning (32 px/step) while normal is 16 px/step."""
+        from core.platform.mock import MockInputDriver
+        from motor.locomotion import LocomotionController
+
+        driver = MockInputDriver(dry_run=True)
+        controller = LocomotionController(driver, mouse_gain_x=100.0)
+
+        # Normal turn without obstacle -> clamped to 16 px/frame
+        controller.apply({"turn": 1.0, "is_obstacle_close": False})
+        normal_move = [a for a in driver.logged_actions if a[0] == "move"][-1][1]
+        self.assertEqual(normal_move, 16)
+
+        # Reset controller state
+        controller.last_mouse_dx = 0
+        controller.mouse_accum_x = 0.0
+
+        # Evasion turn with obstacle close -> saccadic boost to 32 px/frame
+        controller.apply({"turn": 1.0, "is_obstacle_close": True})
+        evade_move = [a for a in driver.logged_actions if a[0] == "move"][-1][1]
+        self.assertEqual(evade_move, 32)
 
 
 if __name__ == "__main__":

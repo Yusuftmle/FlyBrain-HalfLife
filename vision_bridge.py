@@ -62,8 +62,12 @@ class VisionBridge:
         # GoldSrc Red Screen Damage Flash Detector State
         self.red_baseline: Optional[float] = None
         self.damage_flash_cooldown: int = 0
+        self.consecutive_red_frames: int = 0
         self.last_valid_frame: Optional[np.ndarray] = None
         self.prev_hud_crop: Optional[np.ndarray] = None
+        
+        # Drosophila Lamina Local Contrast Adaptation (Weber-Fechner / CLAHE for shadow enhancement)
+        self.clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(6, 6))
         
         logger.info(f"VisionBridge initialized: {self.w}x{self.h} grid ({self.total_ommatidia} ommatidia).")
 
@@ -171,11 +175,17 @@ class VisionBridge:
         
         return game_world[y1:y2, x1:x2]
 
-    def process_frame(self, frame_bgr: np.ndarray, roi_size: Optional[int] = None) -> Tuple[np.ndarray, Dict[str, float]]:
+    def process_frame(
+        self, 
+        frame_bgr: np.ndarray, 
+        roi_size: Optional[int] = None,
+        ego_yaw_dx: float = 0.0
+    ) -> Tuple[np.ndarray, Dict[str, float]]:
         """
         Converts 2D game frame into biophysical photoreceptor currents.
         Crops GoldSrc HUD, downsamples to ommatidia grid, and applies Naka-Rushton log-sigmoidal
         photoreceptor transduction and Poisson fluctuations.
+        Includes biological efference copy (Kim et al. 2015) to cancel self-induced rotational flow.
         """
         if frame_bgr is None or frame_bgr.size == 0:
             return np.zeros(self.total_ommatidia, dtype=np.float32), {"dx": 0.0, "dy": 0.0, "flow": 0.0}
@@ -186,9 +196,12 @@ class VisionBridge:
         # 1. Resample to ommatidial lattice dimensions (matching R1-R6 photoreceptors)
         resized = cv2.resize(clean_fov, (self.w, self.h), interpolation=cv2.INTER_AREA)
 
-        # 2. R1-R6 Broadband Luminance (Grayscale normalized [0.0, 1.0])
-        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-        gray = np.clip(gray, 0.0, 1.0)
+        # 2. R1-R6 Broadband Luminance & Drosophila Lamina Local Adaptation (Laughlin 1981)
+        gray_u8 = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        adapted_gray = self.clahe.apply(gray_u8).astype(np.float32) / 255.0
+        raw_gray = gray_u8.astype(np.float32) / 255.0
+        # Blend: 60% locally adapted (reveals deep shadows, dark doors, and silhouettes) + 40% ambient
+        gray = np.clip(0.60 * adapted_gray + 0.40 * raw_gray, 0.0, 1.0)
 
         # 3. R8 Spectral / Color Contrast (Xiao et al., Nature 2023)
         # R8y: Yellow/Green sensitive opsin (Green channel in linear sRGB)
@@ -201,61 +214,64 @@ class VisionBridge:
         r8y_current = float(self.i_max * (r8y_green_mean ** 1.25 / (r8y_green_mean ** 1.25 + 0.35 ** 1.25)))
         r8p_current = float(self.i_max * (r8p_blue_mean ** 1.25 / (r8p_blue_mean ** 1.25 + 0.35 ** 1.25)))
 
-        # 4. Hassenstein-Reichardt Directional Motion Computation
-        dx, dy, flow_mag = self._compute_optical_flow(gray)
+        # 4. Hassenstein-Reichardt Directional Motion with Efference Copy Subtraction
+        dx_net, dy, flow_mag = self._compute_optical_flow(gray, ego_yaw_dx=ego_yaw_dx)
+        dx = dx_net
 
-        # 4.5 Drosophila Lamina Cartridge Filtering (L1/L2 High-Pass Temporal Contrast)
-        # Enhances spatial contour edges and temporal ON/OFF motion channels
-        spatial_edges = np.abs(cv2.Laplacian(gray, cv2.CV_32F, ksize=3))
-        spatial_edges = np.clip(spatial_edges * 1.8, 0.0, 1.0)
+        # 4.5 Drosophila Lamina Cartridge Spatial & Temporal Edge Extraction
+        # Spatial Laplacian edges directly on the 60x60 ommatidial lattice
+        lap = np.abs(cv2.Laplacian(gray, cv2.CV_32F, ksize=3))
+        # Lamina L3 Monopolar cells: amplify gradients in shadowed / dim regions
+        shadow_weight = np.clip(1.35 - gray, 0.5, 1.8)
+        spatial_edges = np.clip(lap * 3.2 * shadow_weight, 0.0, 1.0)
 
         temporal_motion = np.zeros_like(gray)
         if self.prev_gray is not None:
             temporal_diff = gray - self.prev_gray
             on_channel = np.maximum(0.0, temporal_diff)   # L1 Brightening
             off_channel = np.maximum(0.0, -temporal_diff) # L2 Darkening / Looming shadow
-            temporal_motion = np.clip((on_channel + off_channel) * 2.5, 0.0, 1.0)
+            # Drosophila OFF-pathway has 1.8x higher gain and faster kinetics (Joesch et al., Nature 2010)
+            temporal_motion = np.clip((0.9 * on_channel + 1.8 * off_channel) * 2.5, 0.0, 1.0)
 
-        # 5. Composite Visual Stimulus (High-Contrast R1-R6 Motion & Edge Transduction)
-        # Drosophila R1-R6 ommatidial photoreceptors process pure broadband luminance & edges.
-        # Color (R7/R8) is preserved separately for rewards/telemetry without washing out edge contrast.
-        stimulus = 0.50 * gray + 0.30 * spatial_edges + 0.20 * temporal_motion
+        # 5. Composite Visual Stimulus (High-Contrast R1-R6 Motion, Shadow & Edge Transduction)
+        # Drosophila R1-R6 ommatidial photoreceptors process pure broadband luminance, shadow gradients & motion
+        shadow_contrast = np.clip((0.55 - gray) * 1.2, 0.0, 0.5)  # L2 darkness / shadow silhouette
+        stimulus = np.clip(0.40 * gray + 0.30 * spatial_edges + 0.20 * temporal_motion + 0.10 * shadow_contrast, 0.0, 1.0)
         
-        # Compound-eye ommatidial facet color rendering (biological chromatic representation)
-        retina_color_boost = cv2.convertScaleAbs(resized, alpha=1.25, beta=10)
+        # Compound-eye ommatidial multispectral rendering (illuminated shadows & emerald edges)
+        edge_overlay = np.zeros_like(resized)
+        edge_overlay[:, :, 1] = np.clip(spatial_edges * 200, 0, 255).astype(np.uint8) # Emerald edge contrast
+        edge_overlay[:, :, 0] = np.clip(spatial_edges * 120, 0, 255).astype(np.uint8)
         
-        # Grayscale neural stimulus visualization (what the LIF engine actually sees)
+        shadow_map = np.clip((0.55 - gray) * 1.6, 0.0, 1.0)
+        shadow_tint = np.zeros_like(resized)
+        shadow_tint[:, :, 0] = np.clip(shadow_map * 130, 0, 255).astype(np.uint8) # Biological indigo depth for shadows
+        shadow_tint[:, :, 2] = np.clip(shadow_map * 70, 0, 255).astype(np.uint8)
+        
+        retina_multispectral = cv2.addWeighted(resized, 0.75, edge_overlay, 0.35, 0)
+        retina_multispectral = cv2.add(retina_multispectral, shadow_tint)
+        
+        # Grayscale neural stimulus visualization
         stim_vis = np.clip(stimulus * 255.0, 0, 255).astype(np.uint8)
         retina_gray_bgr = cv2.cvtColor(stim_vis, cv2.COLOR_GRAY2BGR)
         half_w = self.w // 2
         
         # 5.1 Drosophila Optomotor Corridor Centering & Wall Avoidance Reflex
-        # Compares visual depth/luminance/variance between Left and Right hemispheres
         left_eye = gray[:, :self.w // 2]
         right_eye = gray[:, self.w // 2:]
-        left_depth = float(np.var(left_eye) + np.mean(left_eye) * 0.4)
-        right_depth = float(np.var(right_eye) + np.mean(right_eye) * 0.4)
+        left_edges = spatial_edges[:, :self.w // 2]
+        right_edges = spatial_edges[:, self.w // 2:]
+        left_depth = float(np.var(left_eye) + np.mean(left_eye) * 0.4 + np.mean(left_edges) * 0.2)
+        right_depth = float(np.var(right_eye) + np.mean(right_eye) * 0.4 + np.mean(right_edges) * 0.2)
         depth_balance = float(right_depth - left_depth)
         
-        # Center collision zone (frontal obstacle proximity calibrated to Half-Life textures)
+        # Center collision zone (flat wall directly in front has near-zero texture variance)
         center_zone = gray[self.h // 4 : 3 * self.h // 4, self.w // 4 : 3 * self.w // 4]
-        center_edges = float(np.mean(spatial_edges[self.h // 4 : 3 * self.h // 4, self.w // 4 : 3 * self.w // 4]))
         center_var = float(np.var(center_zone))
 
-        # Dedicated Half-Fence & Low Barrier Detector (ground/waist band)
-        lower_center_edges = float(np.mean(spatial_edges[self.h // 2 : 5 * self.h // 6, self.w // 4 : 3 * self.w // 4]))
-        lower_center_var = float(np.var(gray[self.h // 2 : 5 * self.h // 6, self.w // 4 : 3 * self.w // 4]))
-        is_fence = bool(lower_center_edges > 0.16 and lower_center_var > 0.008)
-
-        # Calibrated frontal obstacle proximity:
-        # A wall is close if texture variance drops (flush against surface, < 0.0028)
-        # OR low edges with low variance (flat texture/corner), OR dense looming edges (> 0.30), OR fence.
-        is_obstacle_close = bool(
-            (center_var < 0.0028)
-            or (center_edges < 0.10 and center_var < 0.0035)
-            or (center_edges > 0.30)
-            or is_fence
-        )
+        # Obstacle proximity: only true when flush against a wall or flat barrier (guard against black screen)
+        is_obstacle_close = bool(center_var < 0.0018 and float(np.mean(center_zone)) > 0.04)
+        is_fence = False
         
         now = time.time()
         if not hasattr(self, "obstacle_divert_dir"):
@@ -280,11 +296,12 @@ class VisionBridge:
             else:
                 stimulus[:, :self.w // 2] *= (1.0 + min(0.65, abs(depth_balance) * 2.5))
 
-        # Directional motion amplification (optomotor reflex)
-        if dx > 0.04:
-            stimulus[:, :self.w // 2] *= (1.0 + 1.0 * dx)
-        elif dx < -0.04:
-            stimulus[:, self.w // 2:] *= (1.0 + 1.0 * abs(dx))
+        # Directional motion amplification (optomotor reflex with biological efference copy)
+        # Voluntary turns are canceled out via corollary discharge; only unpredicted external slip excites the eyes
+        if dx > 0.06:
+            stimulus[:, :self.w // 2] *= (1.0 + 0.40 * min(1.0, dx))
+        elif dx < -0.06:
+            stimulus[:, self.w // 2:] *= (1.0 + 0.40 * min(1.0, abs(dx)))
 
         # 5.2 Drosophila LC10/LC11 Small Target & Crosshair Motion Tracking
         # Checks the central 14x14 ommatidia directly in front of the fly (aligned with weapon crosshair)
@@ -353,6 +370,8 @@ class VisionBridge:
 
         metrics = {
             "dx": float(dx),
+            "dx_raw": float(self.last_flow_details.get("raw_dx", dx)),
+            "ego_slip": float(self.last_flow_details.get("ego_turn_slip", 0.0)),
             "dy": float(dy),
             "flow": float(flow_mag),
             "divergence": float(divergence),
@@ -374,15 +393,19 @@ class VisionBridge:
             "mean_photocurrent": float(np.mean(photoreceptor_currents)),
             "left_eye_current": float(np.mean(left_currents)),
             "right_eye_current": float(np.mean(right_currents)),
-            "left_eye_bgr": retina_gray_bgr[:, :half_w].copy(),
-            "right_eye_bgr": retina_gray_bgr[:, half_w:].copy(),
-            "retina_color_bgr": retina_gray_bgr
+            "left_eye_bgr": retina_multispectral[:, :half_w].copy(),
+            "right_eye_bgr": retina_multispectral[:, half_w:].copy(),
+            "retina_color_bgr": retina_multispectral
         }
 
         return photoreceptor_currents, metrics
 
-    def _compute_optical_flow(self, current_gray: np.ndarray) -> Tuple[float, float, float]:
-        """Calculates gradient-based Hassenstein-Reichardt optical flow."""
+    def _compute_optical_flow(self, current_gray: np.ndarray, ego_yaw_dx: float = 0.0) -> Tuple[float, float, float]:
+        """
+        Calculates gradient-based Hassenstein-Reichardt optical flow.
+        Includes biological corollary discharge / efference copy (Kim et al. 2015 Nature):
+        Cancels out the visual rotational slip produced by the fly's own motor steering command.
+        """
         if self.prev_gray is None:
             self.prev_gray = current_gray
             return 0.0, 0.0, 0.0
@@ -395,9 +418,15 @@ class VisionBridge:
         u = - (dt_diff * grad_x) / denom
         v = - (dt_diff * grad_y) / denom
 
-        dx = float(np.mean(u))
+        raw_dx = float(np.mean(u))
         dy = float(np.mean(v))
         mag = float(np.mean(np.sqrt(u**2 + v**2)))
+
+        # Biological Efference Copy (Corollary Discharge):
+        # Turning right (mouse_dx > 0) causes leftward scene translation (negative u).
+        # We subtract this expected self-induced slip so voluntary turns are not resisted.
+        ego_turn_slip = - float(ego_yaw_dx) * 0.008
+        dx_net = raw_dx - ego_turn_slip
 
         # Optical Flow Helmholtz Decomposition
         h, w = u.shape
@@ -418,30 +447,34 @@ class VisionBridge:
             "divergence": divergence,
             "v_pitch": v_pitch,
             "v_top": v_top,
-            "v_bottom": v_bottom
+            "v_bottom": v_bottom,
+            "raw_dx": raw_dx,
+            "dx_net": dx_net,
+            "ego_turn_slip": ego_turn_slip
         }
 
         self.prev_gray = current_gray
-        self.prev_flow = (dx, dy)
-        return dx, dy, mag
+        self.prev_flow = (dx_net, dy)
+        return dx_net, dy, mag
 
     def detect_damage_flash(
         self, 
         frame_bgr: np.ndarray, 
-        threshold: float = 0.08,
+        threshold: float = 0.05,
         last_shot_time: float = 0.0
     ) -> Tuple[bool, float]:
         """
-        GoldSrc Damage Detection: Central Viewport Blood/Damage indicator red chromatic spike.
-        Suppresses player's own weapon muzzle flash.
+        GoldSrc Damage Detection: Fullscreen ScreenFade red chromatic impulse.
+        Accurately detects both light bullet grazes and heavy explosive damage,
+        while strictly rejecting localized RPG lasers and weapon lights.
         Returns (is_damage: bool, intensity: float).
         """
         if frame_bgr is None or frame_bgr.size == 0:
             return False, 0.0
 
         now = time.time()
-        # Weapon Muzzle Flash Immunity Window (ignore own weapon fire)
-        is_own_fire = (now - last_shot_time) < 0.38
+        # Weapon Muzzle Flash Immunity Window (shortened to 120ms so enemy return fire is not missed)
+        is_own_fire = (now - last_shot_time) < 0.12
             
         if self.damage_flash_cooldown > 0:
             self.damage_flash_cooldown -= 1
@@ -450,10 +483,35 @@ class VisionBridge:
         if h < 20 or w < 20:
             return False, 0.0
 
-        # --- Central Viewport Blood / Damage Flash ---
+        # 1. Screen Border Red Excess Check:
+        # Fullscreen damage ScreenFade tints the whole frame uniformly, including borders.
+        b_h = max(2, h // 12)
+        b_w = max(2, w // 12)
+        top_strip = frame_bgr[:b_h, :]
+        bot_strip = frame_bgr[-b_h:, :]
+        left_strip = frame_bgr[:, :b_w]
+        right_strip = frame_bgr[:, -b_w:]
+
+        def get_strip_red_excess(patch: np.ndarray) -> float:
+            if patch.size == 0:
+                return 0.0
+            r = patch[:, :, 2].astype(np.float32) / 255.0
+            g = patch[:, :, 1].astype(np.float32) / 255.0
+            b = patch[:, :, 0].astype(np.float32) / 255.0
+            return float(np.mean(np.clip(r - 0.5 * (g + b), 0.0, 1.0)))
+
+        border_r_excess = 0.25 * (
+            get_strip_red_excess(top_strip)
+            + get_strip_red_excess(bot_strip)
+            + get_strip_red_excess(left_strip)
+            + get_strip_red_excess(right_strip)
+        )
+
+        # 2. Central Viewport Blood / Damage Flash Check
         center_patch = frame_bgr[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4]
         delta_red = 0.0
         mean_r_excess = 0.0
+        high_red_fraction = 0.0
         is_damage = False
 
         if center_patch.size > 0:
@@ -463,22 +521,38 @@ class VisionBridge:
             b_c = small[:, :, 0]
             r_excess = np.clip(r_c - 0.5 * (g_c + b_c), 0.0, 1.0)
             mean_r_excess = float(np.mean(r_excess))
-            
+            high_red_fraction = float(np.mean(r_excess > 0.06))
+
+            # Temporal persistence:
+            if mean_r_excess > 0.06:
+                self.consecutive_red_frames += 1
+            else:
+                self.consecutive_red_frames = 0
+
             # Initialize baseline on first frame
             if self.red_baseline is None:
                 self.red_baseline = mean_r_excess
             else:
                 delta_red = mean_r_excess - self.red_baseline
-                self.red_baseline = 0.92 * self.red_baseline + 0.08 * mean_r_excess
+                self.red_baseline = 0.90 * self.red_baseline + 0.10 * mean_r_excess
 
-            # Only trigger on real incoming damage; suppress player's own weapon muzzle flash
-            if not is_own_fire and (delta_red > threshold or mean_r_excess > 0.40):
+            # Half-Life damage flash criteria:
+            # 1. Not during fly's own immediate muzzle flash (<120ms)
+            # 2. Sharp onset delta spike in red (delta_red > threshold)
+            # 3. Sufficient red coverage across central FOV (high_red_fraction > 0.10)
+            # 4. Border or overall pervasive redness (border_r_excess > 0.012 or delta_red > 0.08)
+            # 5. Onset window (consecutive_red_frames <= 6 frames at 60-100 FPS)
+            if (not is_own_fire
+                    and delta_red > threshold
+                    and high_red_fraction > 0.10
+                    and (border_r_excess > 0.012 or delta_red > 0.08)
+                    and self.consecutive_red_frames <= 6):
                 is_damage = True
 
         if is_damage and (self.damage_flash_cooldown == 0):
-            self.damage_flash_cooldown = 14 # Refractory debounce (~0.45s)
+            self.damage_flash_cooldown = 15  # Debounce
             logger.warning(
-                f"🚨 Damage detected! Red delta: {delta_red:.3f} (mean: {mean_r_excess:.3f})"
+                f"🚨 Damage detected! Red delta: {delta_red:.3f} (mean: {mean_r_excess:.3f}, border: {border_r_excess:.3f}, coverage: {high_red_fraction:.2f})"
             )
             return True, float(max(delta_red, 0.25))
             

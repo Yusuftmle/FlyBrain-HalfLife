@@ -115,6 +115,34 @@ class TestModularMotor(unittest.TestCase):
         self.assertFalse(reflexes.is_active())
         self.assertEqual(len(mock_driver.active_actions), 0)
 
+    def test_locomotion_classic_mode(self):
+        """Verifies 5dc63cd classic high-authority steering: A/D strafe + Arrow Keys + decisive mouse dx."""
+        mock_driver = MockInputDriver(dry_run=True)
+        controller = LocomotionController(
+            mock_driver,
+            classic_mode=True,
+            enable_strafe=True,
+            enable_arrow_keys=True
+        )
+
+        # 1. Steer left: commands A key + Left arrow + decisive mouse dx
+        controller.apply({"turn": -0.5, "forward": 0.5, "is_obstacle_close": False})
+        self.assertIn(ActionKey.FORWARD, mock_driver.active_actions)
+        self.assertIn(ActionKey.STRAFE_LEFT, mock_driver.active_actions)
+        self.assertIn(ActionKey.TURN_LEFT, mock_driver.active_actions)
+        self.assertNotIn(ActionKey.STRAFE_RIGHT, mock_driver.active_actions)
+        self.assertNotIn(ActionKey.TURN_RIGHT, mock_driver.active_actions)
+
+        moves = [act for act in mock_driver.logged_actions if act[0] == "move"]
+        self.assertLessEqual(moves[-1][1], -45, "Classic mode must command high-authority mouse yaw <= -45")
+
+        # 2. Obstacle close: triggers backward step 'S' and releases 'W'
+        controller.apply({"turn": 0.4, "forward": 0.2, "is_obstacle_close": True})
+        self.assertIn(ActionKey.BACKWARD, mock_driver.active_actions)
+        self.assertNotIn(ActionKey.FORWARD, mock_driver.active_actions)
+        self.assertIn(ActionKey.STRAFE_RIGHT, mock_driver.active_actions)
+        self.assertIn(ActionKey.TURN_RIGHT, mock_driver.active_actions)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,7 +25,7 @@ class NeuralDecoder:
         forward_gain: float = 3.5,
         turn_deadzone: float = 0.010,
         walk_threshold: float = 0.02,
-        attack_threshold: float = 0.35,
+        attack_threshold: float = 0.22,
         decision_interval: float = 0.08
     ):
         self.tau_sec = max(0.01, tau_ms / 1000.0)
@@ -145,11 +145,13 @@ class NeuralDecoder:
                 else:
                     self.sampled_turn = 0.0
 
-        # When starting from neutral, adopt turn immediately; smooth during active transitions
+        # Continuous critically-damped analog interpolation:
+        # Smoothly interpolates turn action at any frame rate (60-250 FPS) without stepped staircases
         if self.active_turn_dir != 0 and abs(self.current_turn) < self.turn_deadzone:
             self.current_turn = self.sampled_turn
         else:
-            self.current_turn += 0.40 * (self.sampled_turn - self.current_turn)
+            alpha_turn = 1.0 - math.exp(-dt / 0.045)
+            self.current_turn += alpha_turn * (self.sampled_turn - self.current_turn)
 
         turn_action = float(np.clip(self.current_turn, -1.0, 1.0))
 
