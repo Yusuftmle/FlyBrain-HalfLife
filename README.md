@@ -77,12 +77,14 @@ The system operates on an asynchronous four-layer biological processing stack de
                                            │ Decoded Motor Commands
                                            ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ 4. NEUROMUSCULAR MOTOR DECODE (InputBridge)                                            │
-│   • DNp20: Bilateral steering differential  ──► Saccadic Turn (A / D) & Mouse Yaw      │
-│   • DNpe017: Locomotor drive & thrust       ──► Forward Walking (W)                    │
-│   • MDN (Moonwalker Descending Neuron):     ──► Backward Step (S) (*Bidaye et al. 2014)│
-│   • Giant Fiber (GF): Chromatic damage      ──► Emergency Leap (Space) + 180° Spin     │
-│   • DirectInput Hardware Driver: Kernel scancodes bypass DirectX virtual input filters │
+│ 4. MODULAR NEUROMUSCULAR MOTOR SUBSYSTEM (motor/)                                      │
+│   • DNp20 (Bilateral Steering):             ──► Pure Analog Continuous Mouse Yaw       │
+│   • DNpe017-Fwd (Locomotor Drive):          ──► Continuous Forward Exploration (W)     │
+│   • DNpe017-Atk (Predatory Strike / Fire):  ──► Crosshair Target Lock & Counter-Fire   │
+│   • MDN (Moonwalker Descending Neurons):    ──► Backward Retreat (S) (*Science 2014)   │
+│   • DNp09 (Escape Saccades):                ──► Rapid Threat Avoidance & Lateral Dart  │
+│   • Virtual Haltere (Gaze Stabilization):   ──► Closed-Loop Pitch & Horizon Spring     │
+│   • Combat Retaliation Reflex FSM:          ──► 180° Whip-Turn, Jump-Strafe & Escape   │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -98,15 +100,30 @@ The fly eye does not process high-resolution raster buffers. Instead, FlyBrain s
   $$\frac{R}{R_{max}} = \frac{I^n}{I^n + \sigma^n}$$
   Prevents epileptic neural saturation during sudden lighting transitions or explosion flashes and enhances contrast sensitivity in dark subterranean corridors.
 
-### 2. Motor Decoding Circuits
-Biological descending neurons control discrete locomotion primitives:
-- **DNp20 (Bilateral Steering)**: Measures differential spike counts between left ($DN_{p20,L}$) and right ($DN_{p20,R}$) hemispheres. When differential firing exceeds the action threshold, it issues proportional turning commands via mouse yaw and strafe keys.
-- **DNpe017 (Forward Locomotion)**: Encodes forward walking velocity. Modulates forward thrust (`DIK_W`) based on optical flow and corridor clearance, driving continuous exploration.
-- **MDN (Moonwalker Descending Neuron)**: Replicates the seminal discovery by *Bidaye et al. (Science 2014)*. If optical flow detects zero parallax or persistent collisions for >2 seconds, MDN fires, inhibiting forward stepping and initiating backward walking (`DIK_S`) coupled with an escape turn.
-- **Giant Fiber (GF) Emergency Escape Reflex**: A massive biological escape interneuron that triggers when a sharp chromatic red flash (damage taken) is detected:
-  1. Instantly commands an evasive backward leap (`DIK_SPACE` + `DIK_S`).
-  2. Dispatches a 180° reflex spin away from danger.
-  3. Re-routes visual orientation towards open corridors for immediate survival.
+### 2. Modular Motor Decoding & Biological Locomotion
+
+Rather than using artificial policies, motor control in FlyBrain is modularized across four biophysical subsystems located in the [`motor/`](motor/) package:
+
+1. **Descending Neuron Spike Decoding ([`motor/decoder.py`](motor/decoder.py))**:
+   - **DNp20 (Bilateral Steering)**: Measures differential spike counts between left ($DN_{p20,L}$) and right ($DN_{p20,R}$) hemispheres to drive proportional steering.
+   - **DNpe017-Fwd (Forward Locomotor Drive)**: Encodes forward walking velocity, modulated by corridor depth and optical flow.
+   - **DNpe017-Atk (Predatory Strike / Fire)**: Discharges primary weapon attack upon visual target lock in the central ommatidial crosshair or during combat counter-offensives.
+   - **MDN (Moonwalker Descending Neurons)**: Faithfully models the seminal discovery by *Bidaye et al. (Science 2014)*. Persistent obstacles trigger backward crawl (`DIK_S`) and turn redirection.
+   - **DNp09 (Rapid Evasive Saccades)**: High-speed escape turns executing sharp directional deviations during panic states.
+
+2. **Pure Analog Mouse Yaw Locomotion ([`motor/locomotion.py`](motor/locomotion.py))**:
+   - **Zero Keyboard Jitter**: Eliminates clumsy discrete A/D strafe key tapping in favor of continuous, fluid analog mouse yaw rotations ($dx$).
+   - **Helmholtz Visual Alignment**: Couples optomotor directional flow with efference copy cancellation to center navigation along open hallways.
+
+3. **Closed-Loop Virtual Haltere Gaze Stabilization ([`motor/haltere.py`](motor/haltere.py))**:
+   - Acts as a biological gyroscope using Helmholtz optic flow divergence to estimate vertical pitch drift.
+   - Features physical **spring-damper recovery** that automatically brings pitch back to a level horizon (0.0°).
+   - Incorporates anti-windup clamping, deadband suppression of micro-jitter, and transient glance (inspecting elevated obstacles before snapping back to level).
+
+4. **Emergency Reflex Finite State Machine ([`motor/reflexes.py`](motor/reflexes.py))**:
+   - **Combat Retaliation & 180° Whip-Turn**: Detecting red damage flashes triggers an immediate 180° counter-turn, sustained primary fire discharge, and jump-strafe evasion.
+   - **Low Fence & Railing Hop**: Detects walkable low barriers and commands automated hop reflexes.
+   - **MDN Unstick Maneuvers**: Saccadic 90° escape bursts breaking complex deadlocks.
 
 ### 3. 3-Factor Hebbian STDP Plasticity
 Associative learning is mediated by dopamine-dependent Spike-Timing-Dependent Plasticity (STDP) across the **Mushroom Body**:
@@ -196,6 +213,15 @@ python main.py --mode arena
 Automatically simulate and record a 60-second 1080p promotional video with the complete HUD overlay:
 ```bash
 run_record_reel.bat
+```
+
+### Option 5: High-FPS CPU Mode (`--preset cpu-lite`)
+For machines without dedicated CUDA GPUs, run the biologically scaled 3,170-neuron connectome (30×30 ommatidial lattice) maintaining 40–90+ FPS:
+```bash
+python main.py --mode live --cpu-lite
+
+# Maximum simulation speed (Headless mode):
+python main.py --mode live --cpu-lite --no-vis --no-web-stream
 ```
 
 ---
