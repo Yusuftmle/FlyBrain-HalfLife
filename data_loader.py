@@ -134,7 +134,8 @@ class ConnectomeDataLoader:
         num_mushroom_body_kc: int = 2400,
         num_mbon: int = 120,
         num_dopaminergic: int = 60,
-        num_descending: int = 80
+        num_descending: int = 80,
+        is_lite: bool = False
     ) -> Tuple[sp.csr_matrix, Dict[str, Any]]:
         """
         Builds the canonical MaleCNS v1.0 / FlyWire connectome matching DOOMFLY's graph manifest:
@@ -143,44 +144,57 @@ class ConnectomeDataLoader:
         - LB3c sugar conditioning sensors
         - DNp20 / DNpe017 BCI descending readouts
         - 400k+ biological synapses with ACh(+) and GABA/Glu(-) polarities.
+        - is_lite: Downscales to 30x30 eye grid and ~3,170 neurons for high CPU FPS.
         """
-        # 1. Dynamically check for user-supplied dataset in ./data (Prevents hardcoded path traps)
-        local_datasets = self.discover_local_datasets()
-        if "npz" in local_datasets:
-            user_npz = local_datasets["npz"]
-            logger.info(f"Discovered user dataset in ./data: {user_npz}")
-            try:
-                data = np.load(user_npz, allow_pickle=True)
-                if "ptr" in data and "post" in data and "weight" in data:
-                    ptr = data["ptr"]
-                    post = data["post"]
-                    weight = data["weight"]
-                    num_n = len(ptr) - 1
-                    weights = sp.csr_matrix((weight, post, ptr), shape=(num_n, num_n), dtype=np.float32)
-                    meta = {
-                        "num_neurons": num_n,
-                        "num_synapses": int(weights.nnz),
-                        "retina_indices": data.get("retina", np.arange(3600)),
-                        "lamina_indices": data.get("lamina", np.arange(3600, 4800)),
-                        "sugar_indices": data.get("sugar", np.arange(4800, 4830)),
-                        "readouts": [
-                            {"index": 0, "type": "DNp20", "side": "L"},
-                            {"index": 1, "type": "DNp20", "side": "R"},
-                            {"index": 2, "type": "DNpe017", "side": "R"},
-                            {"index": 3, "type": "DNpe017", "side": "L"},
-                            {"index": 4, "type": "MDN", "side": "L"},
-                            {"index": 5, "type": "MDN", "side": "R"},
-                            {"index": 6, "type": "DNp09", "side": "L"},
-                            {"index": 7, "type": "DNp09", "side": "R"}
-                        ]
-                    }
-                    logger.info(f"Loaded DOOMFLY native graph from ./data: {num_n:,} neurons, {weights.nnz:,} synapses.")
-                    return weights, meta
-            except Exception as e:
-                logger.warning(f"Could not load custom dataset from {user_npz}: {e}")
+        if is_lite:
+            num_photoreceptors = 900
+            num_optic_lobe = 1200
+            num_central_complex = 300
+            num_mushroom_body_kc = 600
+            num_mbon = 60
+            num_dopaminergic = 30
+            num_descending = 80
+            cache_file = os.path.join(self.cache_dir, "canonical_flywire_lite_v1.npz")
+        else:
+            cache_file = os.path.join(self.cache_dir, "canonical_flywire_v783.npz")
+
+        # 1. Check user-supplied dataset in ./data only when running full graph
+        if not is_lite:
+            local_datasets = self.discover_local_datasets()
+            if "npz" in local_datasets:
+                user_npz = local_datasets["npz"]
+                logger.info(f"Discovered user dataset in ./data: {user_npz}")
+                try:
+                    data = np.load(user_npz, allow_pickle=True)
+                    if "ptr" in data and "post" in data and "weight" in data:
+                        ptr = data["ptr"]
+                        post = data["post"]
+                        weight = data["weight"]
+                        num_n = len(ptr) - 1
+                        weights = sp.csr_matrix((weight, post, ptr), shape=(num_n, num_n), dtype=np.float32)
+                        meta = {
+                            "num_neurons": num_n,
+                            "num_synapses": int(weights.nnz),
+                            "retina_indices": data.get("retina", np.arange(3600)),
+                            "lamina_indices": data.get("lamina", np.arange(3600, 4800)),
+                            "sugar_indices": data.get("sugar", np.arange(4800, 4830)),
+                            "readouts": [
+                                {"index": 0, "type": "DNp20", "side": "L"},
+                                {"index": 1, "type": "DNp20", "side": "R"},
+                                {"index": 2, "type": "DNpe017", "side": "R"},
+                                {"index": 3, "type": "DNpe017", "side": "L"},
+                                {"index": 4, "type": "MDN", "side": "L"},
+                                {"index": 5, "type": "MDN", "side": "R"},
+                                {"index": 6, "type": "DNp09", "side": "L"},
+                                {"index": 7, "type": "DNp09", "side": "R"}
+                            ]
+                        }
+                        logger.info(f"Loaded DOOMFLY native graph from ./data: {num_n:,} neurons, {weights.nnz:,} synapses.")
+                        return weights, meta
+                except Exception as e:
+                    logger.warning(f"Could not load custom dataset from {user_npz}: {e}")
 
         # 2. Check local compiled cache
-        cache_file = os.path.join(self.cache_dir, "canonical_flywire_v783.npz")
         if os.path.exists(cache_file):
             try:
                 data = np.load(cache_file, allow_pickle=True)
@@ -276,45 +290,61 @@ class ConnectomeDataLoader:
                 syn_count_list.extend(syns.tolist())
                 nt_type_list.extend([nt] * src_len)
 
-        # 1. Retina (R1-R6) -> Lamina / Medulla (ACh Excitatory, fan-out 32)
-        add_tract(region_offsets["photoreceptors"], region_counts["photoreceptors"],
-                  region_offsets["optic_lobe"], region_counts["optic_lobe"],
-                  fan_out=32, mean_syn=8, nt="acetylcholine")
+        # 1. Retina (R1-R6) -> Lamina / Medulla (Ipsilateral biological projection per eye)
+        half_pr = region_counts["photoreceptors"] // 2
+        half_ol = region_counts["optic_lobe"] // 2
+        pr_off = region_offsets["photoreceptors"]
+        ol_off = region_offsets["optic_lobe"]
 
-        # 2. Optic Lobe -> Central Complex (Heading integration, fan-out 16)
+        # Left Eye -> Left Optic Lobe
+        add_tract(pr_off, half_pr, ol_off, half_ol, fan_out=16 if is_lite else 32, mean_syn=8, nt="acetylcholine")
+        # Right Eye -> Right Optic Lobe
+        add_tract(pr_off + half_pr, half_pr, ol_off + half_ol, half_ol, fan_out=16 if is_lite else 32, mean_syn=8, nt="acetylcholine")
+
+        # 2. Optic Lobe -> Central Complex (Heading integration)
         add_tract(region_offsets["optic_lobe"], region_counts["optic_lobe"],
                   region_offsets["central_complex"], region_counts["central_complex"],
-                  fan_out=16, mean_syn=10, nt="acetylcholine")
+                  fan_out=8 if is_lite else 16, mean_syn=10, nt="acetylcholine")
 
-        # 3. Optic Lobe -> Mushroom Body KC (Sensory encoding, fan-out 18)
+        # 3. Optic Lobe -> Mushroom Body KC (Sensory encoding)
         add_tract(region_offsets["optic_lobe"], region_counts["optic_lobe"],
                   region_offsets["mushroom_body_kc"], region_counts["mushroom_body_kc"],
-                  fan_out=18, mean_syn=5, nt="acetylcholine")
+                  fan_out=10 if is_lite else 18, mean_syn=5, nt="acetylcholine")
 
-        # 4. Kenyon Cells (KC) -> MBON (Associative readout, fan-out 24)
+        # 4. Kenyon Cells (KC) -> MBON (Associative readout)
         add_tract(region_offsets["mushroom_body_kc"], region_counts["mushroom_body_kc"],
                   region_offsets["mbon"], region_counts["mbon"],
-                  fan_out=24, mean_syn=12, nt="acetylcholine")
+                  fan_out=12 if is_lite else 24, mean_syn=12, nt="acetylcholine")
 
-        # 5. Dopaminergic PPL1 -> MBON / KC (Dopamine modulation, fan-out 20)
+        # 5. Dopaminergic PPL1 -> MBON / KC (Dopamine modulation)
         add_tract(region_offsets["dopaminergic"], region_counts["dopaminergic"],
                   region_offsets["mbon"], region_counts["mbon"],
-                  fan_out=20, mean_syn=15, nt="dopamine")
+                  fan_out=10 if is_lite else 20, mean_syn=15, nt="dopamine")
 
-        # 6. Central Complex -> Descending Neurons (Heading control, fan-out 25)
+        # 6. Central Complex -> Descending Neurons (Heading control)
         add_tract(region_offsets["central_complex"], region_counts["central_complex"],
                   region_offsets["descending"], region_counts["descending"],
-                  fan_out=25, mean_syn=14, nt="acetylcholine")
+                  fan_out=15 if is_lite else 25, mean_syn=14, nt="acetylcholine")
 
-        # 7. MBON -> Descending Neurons (Valence action triggers, fan-out 30)
-        add_tract(region_offsets["mbon"], region_counts["mbon"],
-                  region_offsets["descending"], region_counts["descending"],
-                  fan_out=30, mean_syn=18, nt="acetylcholine")
+        # 7. MBON -> Descending Neurons (Valence action triggers)
+        # Avoidance MBONs (first half) -> MDN backward walking & DNp20 turn away
+        # Approach MBONs (second half) -> DNpe017 forward walking
+        mbon_off = region_offsets["mbon"]
+        mbon_cnt = region_counts["mbon"]
+        half_mbon = mbon_cnt // 2
+        dn_off = region_offsets["descending"]
 
-        # 8. Optic Lobe Lateral Inhibition (GABAergic / Glutamatergic, fan-out 12)
+        # Avoidance MBON -> MDN (backward) & DNp09 (escape) & DNp20 (turn)
+        add_tract(mbon_off, half_mbon, dn_off + 4, 4, fan_out=15 if is_lite else 25, mean_syn=20, nt="acetylcholine")
+        add_tract(mbon_off, half_mbon, dn_off, 2, fan_out=10 if is_lite else 15, mean_syn=15, nt="acetylcholine")
+        
+        # Approach MBON -> DNpe017 (forward walking)
+        add_tract(mbon_off + half_mbon, half_mbon, dn_off + 2, 2, fan_out=15 if is_lite else 30, mean_syn=22, nt="acetylcholine")
+
+        # 8. Optic Lobe Lateral Inhibition (GABAergic / Glutamatergic)
         add_tract(region_offsets["optic_lobe"], region_counts["optic_lobe"],
                   region_offsets["optic_lobe"], region_counts["optic_lobe"],
-                  fan_out=12, mean_syn=6, nt="gaba")
+                  fan_out=6 if is_lite else 12, mean_syn=6, nt="gaba")
 
         pre_arr = np.array(pre_list, dtype=np.int64)
         post_arr = np.array(post_list, dtype=np.int64)
@@ -325,8 +355,8 @@ class ConnectomeDataLoader:
 
         # DOOMFLY Specific Subpopulations
         retina_indices = np.arange(region_offsets["photoreceptors"], region_offsets["photoreceptors"] + region_counts["photoreceptors"], dtype=np.int32)
-        lamina_indices = np.arange(region_offsets["optic_lobe"], region_offsets["optic_lobe"] + 1200, dtype=np.int32) # L1-L5 Lamina
-        sugar_indices = np.arange(region_offsets["dopaminergic"], region_offsets["dopaminergic"] + 30, dtype=np.int32) # LB3c Sugar
+        lamina_indices = np.arange(region_offsets["optic_lobe"], region_offsets["optic_lobe"] + min(1200, region_counts["optic_lobe"]), dtype=np.int32) # L1-L5 Lamina
+        sugar_indices = np.arange(region_offsets["dopaminergic"], region_offsets["dopaminergic"] + min(30, region_counts["dopaminergic"]), dtype=np.int32) # LB3c Sugar
         
         dn_off = region_offsets["descending"]
         readouts = [

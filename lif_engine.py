@@ -90,6 +90,7 @@ class PyTorchLIFEngine:
         self.baseline_plastic_weights: Optional[torch.Tensor] = None
         self.plastic_pre: Optional[torch.Tensor] = None
         self.plastic_post: Optional[torch.Tensor] = None
+        self.plastic_valence_sign: Optional[torch.Tensor] = None
 
     @property
     def spikes(self) -> np.ndarray:
@@ -230,6 +231,69 @@ class PyTorchLIFEngine:
 
             return spikes_np
 
+    def forward_substeps(self, external_current: Optional[np.ndarray] = None, num_substeps: int = 4) -> np.ndarray:
+        """
+        Executes multiple biological LIF solver substeps sequentially on GPU
+        with zero intermediate CPU memory syncs for high-throughput (60-120+ FPS) execution.
+        """
+        if num_substeps <= 1:
+            return self.forward_step(external_current)
+
+        if getattr(self, "is_flatlined", False):
+            self.last_spikes = np.zeros(self.num_neurons, dtype=np.float32)
+            return self.last_spikes
+
+        with torch.no_grad():
+            if external_current is not None:
+                drive_t = torch.as_tensor(external_current, dtype=torch.float32, device=self.device)
+            else:
+                drive_t = torch.zeros(self.num_neurons, dtype=torch.float32, device=self.device)
+
+            fired = None
+            for _ in range(num_substeps):
+                slot = self.cursor % self.delay_slots
+                in_ref = self.torch_refractory > 0
+                self.torch_refractory[in_ref] -= 1
+
+                total_drive = drive_t
+                if self.spontaneous_noise_std > 0:
+                    total_drive = total_drive + torch.randn(self.num_neurons, device=self.device, dtype=torch.float32) * self.spontaneous_noise_std
+
+                not_ref = ~in_ref
+                self.torch_v[not_ref] = (
+                    self.v_rest 
+                    + (self.torch_v[not_ref] - self.v_rest) * self.av 
+                    + total_drive[not_ref] * (1.0 - self.av) 
+                    + self.torch_g[not_ref] * self.coupling
+                )
+                self.torch_g[not_ref] *= self.ag
+
+                fired = (self.torch_v >= self.v_thresh) & not_ref
+                self.torch_spikes.zero_()
+                self.torch_spikes[fired] = 1.0
+
+                future_slot = (self.cursor + self.delay_slots - 1) % self.delay_slots
+                self.torch_delay_queue[future_slot] = self.torch_spikes
+
+                arriving_spikes = self.torch_delay_queue[slot].unsqueeze(1)
+                if torch.any(arriving_spikes > 0):
+                    synaptic_delivery = torch.sparse.mm(self.torch_WT, arriving_spikes).squeeze(1)
+                    self.torch_g[not_ref] += synaptic_delivery[not_ref]
+
+                self.torch_delay_queue[slot].zero_()
+                self.torch_v[fired] = self.v_reset
+                self.torch_g[fired] = 0.0
+                self.torch_refractory[fired] = self.refractory_steps
+                self.cursor = (self.cursor + 1) % self.delay_slots
+                self.step_count += 1
+
+            spikes_np = fired.cpu().numpy()
+            self.last_spikes = spikes_np
+            idx = self.step_count % self.history_len
+            self.spike_history[idx] = spikes_np.astype(np.float32)
+
+            return spikes_np
+
     def get_firing_rates(self) -> np.ndarray:
         """Returns smoothed firing rate vector (0.0 to 1.0) for motor decoding."""
         if getattr(self, "is_flatlined", False):
@@ -257,10 +321,16 @@ class PyTorchLIFEngine:
             self.torch_v += torch.randn(self.num_neurons, device=self.device) * 2.0
             logger.info("⚡ [DEFIBRILLATION] Resuscitation burst delivered. Brain re-awakened!")
 
-    def init_plastic_synapses(self, pre_indices: np.ndarray, post_indices: np.ndarray):
+    def init_plastic_synapses(
+        self, 
+        pre_indices: np.ndarray, 
+        post_indices: np.ndarray,
+        post_valences: Optional[np.ndarray] = None
+    ):
         """
         Identifies plastic Kenyon Cell (KC) -> MBON synapses for associative learning.
         Tracks baseline efficacy to enforce biological [0.1x, 2.0x] bounding.
+        Supports valence sign differentiation (Avoidance: -1.0, Approach: +1.0).
         """
         coo_indices = self.torch_W.indices() # 2 x nnz
         coo_values = self.torch_W.values()   # nnz
@@ -280,39 +350,68 @@ class PyTorchLIFEngine:
             self.baseline_plastic_weights = self.plastic_weights.clone()
             self.plastic_pre = torch.tensor(rows[plastic_idx], dtype=torch.long, device=self.device)
             self.plastic_post = torch.tensor(cols[plastic_idx], dtype=torch.long, device=self.device)
+
+            if post_valences is not None:
+                val_dict = {int(idx): float(val) for idx, val in zip(post_indices, post_valences)}
+                edge_valences = [val_dict.get(int(cols[i]), 1.0) for i in plastic_idx]
+                self.plastic_valence_sign = torch.tensor(edge_valences, dtype=torch.float32, device=self.device)
+            else:
+                self.plastic_valence_sign = torch.ones(len(plastic_idx), dtype=torch.float32, device=self.device)
+
             logger.info(f"Initialized {len(plastic_idx):,} plastic KC -> MBON synapses for STDP learning.")
         else:
             self.plastic_edge_indices = None
+            self.plastic_valence_sign = None
             logger.info("No matching KC -> MBON edges found for plastic initialization.")
 
-    def apply_stdp_update(self, dopamine: float, eta: float = 0.002):
+    def apply_stdp_update(self, dopamine: float, eta: float = 0.002, extinction_rate: float = 0.0001):
         """
         Applies 3-factor Hebbian STDP update on Kenyon Cell -> MBON synapses:
-        dW = eta * dopamine * S_pre * S_post
+        dW = eta * dopamine * S_pre * S_post * valence_sign
         Clamps efficacy within [0.1x, 2.0x] baseline (matching DOOMFLY specification).
+        Applies passive extinction toward baseline.
         """
-        if self.plastic_edge_indices is None or abs(dopamine) < 0.02:
+        if self.plastic_edge_indices is None:
             return
-        
+
+        has_da = abs(dopamine) >= 0.02
+        has_extinction = (extinction_rate > 0 and self.step_count % 10 == 0)
+
+        if not has_da and not has_extinction:
+            return
+
         with torch.no_grad():
-            rates = torch.as_tensor(self.get_firing_rates(), device=self.device)
-            pre_activity = torch.clamp(rates[self.plastic_pre] + self.torch_spikes[self.plastic_pre], max=1.0)
-            post_activity = torch.clamp(rates[self.plastic_post] + self.torch_spikes[self.plastic_post], max=1.0)
-            co_activity = pre_activity * post_activity
-            
-            activity_signal = co_activity + 0.05 * pre_activity
-            if torch.any(activity_signal > 0) or abs(dopamine) > 0.5:
-                # Modulated by 3-factor Hebbian eligibility trace and dopamine valence
-                effective_signal = torch.clamp(activity_signal, min=0.02 if abs(dopamine) > 0.5 else 0.0)
-                delta_w = eta * float(dopamine) * effective_signal
-                new_weights = self.plastic_weights + delta_w
+            weights_changed = False
+
+            # Passive extinction / decay toward baseline
+            if has_extinction:
+                self.plastic_weights += extinction_rate * (self.baseline_plastic_weights - self.plastic_weights)
+                self.plastic_weights = torch.clamp(
+                    self.plastic_weights, 
+                    min=0.1 * self.baseline_plastic_weights, 
+                    max=2.0 * self.baseline_plastic_weights
+                )
+                weights_changed = True
+
+            if has_da:
+                rates = torch.as_tensor(self.get_firing_rates(), device=self.device)
+                pre_activity = torch.clamp(rates[self.plastic_pre] + self.torch_spikes[self.plastic_pre], max=1.0)
+                post_activity = torch.clamp(rates[self.plastic_post] + self.torch_spikes[self.plastic_post], max=1.0)
+                co_activity = pre_activity * post_activity
                 
-                # Enforce biological sign and clamp efficacy to [0.1, 2.0] of baseline
-                lower_bound = 0.1 * self.baseline_plastic_weights
-                upper_bound = 2.0 * self.baseline_plastic_weights
-                self.plastic_weights = torch.clamp(new_weights, min=lower_bound, max=upper_bound)
-                
-                # Write back into torch_W and update cached torch_WT
+                activity_signal = co_activity + 0.05 * pre_activity
+                if torch.any(activity_signal > 0) or abs(dopamine) > 0.5:
+                    effective_signal = torch.clamp(activity_signal, min=0.02 if abs(dopamine) > 0.5 else 0.0)
+                    valence_multiplier = self.plastic_valence_sign if self.plastic_valence_sign is not None else 1.0
+                    delta_w = eta * float(dopamine) * effective_signal * valence_multiplier
+                    new_weights = self.plastic_weights + delta_w
+                    
+                    lower_bound = 0.1 * self.baseline_plastic_weights
+                    upper_bound = 2.0 * self.baseline_plastic_weights
+                    self.plastic_weights = torch.clamp(new_weights, min=lower_bound, max=upper_bound)
+                    weights_changed = True
+
+            if weights_changed:
                 coo_indices = self.torch_W.indices()
                 coo_values = self.torch_W.values().clone()
                 coo_values[self.plastic_edge_indices] = self.plastic_weights

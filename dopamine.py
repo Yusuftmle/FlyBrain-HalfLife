@@ -4,7 +4,7 @@ Simulates Dopaminergic Reinforcement Loop and 2-Second Anti-Stuck Panic Mode
 """
 import numpy as np
 import scipy.sparse as sp
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from config import ReinforcementConfig, DEFAULT_CONFIG
 from core.connectome import FlyConnectome
 from core.lif_engine import LIFEngine
@@ -28,7 +28,7 @@ class DopamineController:
         
         # Dopamine level dynamics
         self.dopamine_level: float = cfg.base_dopamine
-        self.da_decay: float = 0.92
+        self.da_decay: float = 0.95
         
         # Fast Obstacle Anti-Stuck & Panic state tracking
         self.stationary_steps: int = 0
@@ -57,8 +57,12 @@ class DopamineController:
             delta = self.cfg.forward_reward * magnitude
             self.dopamine_level = min(2.0, self.dopamine_level + delta)
             self.total_rewards += delta
+        elif event_type in ["streak", "progress"]:
+            delta = 0.6 * magnitude
+            self.dopamine_level = min(3.5, self.dopamine_level + delta)
+            self.total_rewards += delta
 
-    def update(self, motion_flow: float) -> Tuple[np.ndarray, Dict[str, Any]]:
+    def update(self, motion_flow: float, is_obstacle: Optional[bool] = None, dt: float = 0.016) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
         Updates dopamine decay, monitors stationary obstacle state,
         computes PPL1 injection current, and applies 3-factor STDP.
@@ -67,18 +71,42 @@ class DopamineController:
         self.dopamine_level = (self.dopamine_level - self.cfg.base_dopamine) * self.da_decay + self.cfg.base_dopamine
 
         # 2. Obstacle Deadlock Detection (Stationary against wall)
-        if motion_flow < 0.045:
-            self.stationary_steps += 1
+        # Tracks real elapsed time (seconds) so deadlock threshold is 100% framerate-independent
+        is_stationary = (motion_flow < 0.00045)
+        if not hasattr(self, "stationary_time"):
+            self.stationary_time = 0.0
+
+        if is_obstacle is not None:
+            if is_obstacle and is_stationary:
+                # Truly stuck: obstacle ahead AND not moving
+                self.stationary_time += dt
+                self.stationary_steps += 1
+            elif is_obstacle and not is_stationary:
+                # Wall visible but still moving (steering around it) — don't increment stuck
+                pass
+            else:
+                # No obstacle — decrement stuck counter fast (recover quickly)
+                self.stationary_time = max(0.0, self.stationary_time - 3.0 * dt)
+                self.stationary_steps = max(0, self.stationary_steps - 3)
+                if motion_flow >= 0.00080:
+                    self.register_event("forward", magnitude=0.15)
         else:
-            self.stationary_steps = max(0, self.stationary_steps - 3)
+            if is_stationary:
+                self.stationary_time += dt
+                self.stationary_steps += 1
+            else:
+                self.stationary_time = max(0.0, self.stationary_time - 3.0 * dt)
+                self.stationary_steps = max(0, self.stationary_steps - 3)
 
         ext_current = np.zeros(self.connectome.total_neurons, dtype=np.float32)
 
-        # 3. Trigger Unstuck Maneuver if Facing Obstacle
-        if self.stationary_steps >= self.cfg.stuck_threshold_steps:
+        # 3. Trigger Unstuck Maneuver only after sustained 1.8s wall deadlock
+        stuck_timeout_s = getattr(self.cfg, "stuck_threshold_seconds", 1.8)
+        if self.stationary_time >= stuck_timeout_s:
             self.is_in_panic = True
-            self.panic_counter = self.cfg.panic_duration_steps
+            self.panic_counter = max(10, int(0.5 / max(0.005, dt)))  # ~500ms escape state
             self.dopamine_level = -2.5
+            self.stationary_time = 0.0
             self.stationary_steps = 0
             # Consistently choose an escape direction (1 = Turn Right, -1 = Turn Left)
             self.escape_direction = 1 if np.random.rand() > 0.5 else -1

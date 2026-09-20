@@ -312,14 +312,14 @@ class WindowsScreenCapture(BaseScreenCapture):
             return None
 
     def grab_frame(self) -> Optional[np.ndarray]:
-        """Grabs active game screen via PrintWindow (primary) or memory-mapped MSS (fallback)."""
+        """Grabs active game screen via PrintWindow (primary, captures 3D OpenGL/DWM buffer) or MSS (fallback)."""
         # 1. Primary: Direct Window-Buffer Capture via PrintWindow
         if self.hwnd:
             frame = self._capture_via_printwindow()
-            if frame is not None:
+            if frame is not None and frame.size > 0 and float(np.mean(frame)) > 0.5:
                 return frame
 
-        # 2. Fallback: Bound window rect via MSS
+        # 2. Fallback: Bound window rect via MSS (only if not black)
         if self.hwnd:
             try:
                 rect = ctypes.wintypes.RECT()
@@ -334,8 +334,10 @@ class WindowsScreenCapture(BaseScreenCapture):
                         "height": h
                     }
                     raw_sct = self.sct.grab(monitor)
-                    bgra = np.array(raw_sct, dtype=np.uint8)
-                    return cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR)
+                    bgra = np.frombuffer(raw_sct.raw, dtype=np.uint8).reshape((h, w, 4))
+                    frame_bgr = cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR)
+                    if float(np.mean(frame_bgr)) > 0.5:
+                        return frame_bgr
             except Exception:
                 pass
 
@@ -393,13 +395,22 @@ class WindowsScreenCapture(BaseScreenCapture):
             return False
 
     def focus_game_window(self) -> bool:
-        """Brings game window to foreground."""
+        """Brings game window to foreground with thread input attachment."""
         if not self.hwnd:
             self.find_target_window()
         if self.hwnd:
             try:
-                ctypes.windll.user32.ShowWindow(self.hwnd, 9) # SW_RESTORE
-                ctypes.windll.user32.SetForegroundWindow(self.hwnd)
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+                fg = user32.GetForegroundWindow()
+                cur_tid = kernel32.GetCurrentThreadId()
+                fg_tid = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+                if fg_tid and cur_tid != fg_tid:
+                    user32.AttachThreadInput(cur_tid, fg_tid, True)
+                user32.ShowWindow(self.hwnd, 9) # SW_RESTORE
+                user32.SetForegroundWindow(self.hwnd)
+                if fg_tid and cur_tid != fg_tid:
+                    user32.AttachThreadInput(cur_tid, fg_tid, False)
                 return True
             except Exception:
                 pass
@@ -498,20 +509,33 @@ class WindowsInputDriver(BaseInputDriver):
             pass
 
     def mouse_click(self, duration: float = 0.05):
-        """Sends primary mouse click (Fire weapon)."""
+        """Sends a complete primary mouse click (Fire weapon) via Win32 SendInput."""
         if self.dry_run:
             return
+        extra = ctypes.c_ulong(0)
         try:
-            extra = ctypes.c_ulong(0)
-            ii_ = Input_I()
-            ii_.mi = MouseInput(0, 0, 0, MOUSEEVENTF_LEFTDOWN, 0, ctypes.pointer(extra))
-            x = Input(ctypes.c_ulong(0), ii_)
-            ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
-            time.sleep(duration)
-            ii_.mi = MouseInput(0, 0, 0, MOUSEEVENTF_LEFTUP, 0, ctypes.pointer(extra))
-            ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
-        except Exception:
-            pass
+            # Mouse button down
+            down = Input(
+                ctypes.c_ulong(0),
+                Input_I(mi=MouseInput(0, 0, 0, MOUSEEVENTF_LEFTDOWN, 0, ctypes.pointer(extra)))
+            )
+            sent = ctypes.windll.user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(Input))
+            if sent != 1:
+                raise ctypes.WinError()
+
+            if duration > 0:
+                time.sleep(duration)
+
+            # Mouse button up
+            up = Input(
+                ctypes.c_ulong(0),
+                Input_I(mi=MouseInput(0, 0, 0, MOUSEEVENTF_LEFTUP, 0, ctypes.pointer(extra)))
+            )
+            sent = ctypes.windll.user32.SendInput(1, ctypes.byref(up), ctypes.sizeof(Input))
+            if sent != 1:
+                raise ctypes.WinError()
+        except Exception as e:
+            logger.error(f"WindowsInputDriver.mouse_click failed: {e}")
 
     def mouse_move_relative(self, dx: int, dy: int):
         """Moves mouse pointer by relative delta (Yaw/Pitch view rotation)."""
@@ -527,10 +551,20 @@ class WindowsInputDriver(BaseInputDriver):
             pass
 
     def release_all(self):
-        """Failsafe: releases all held keys."""
+        """Failsafe: releases all held keys and mouse buttons."""
         for action in list(self.active_actions):
             self.release_action(action)
         self.active_actions.clear()
+        if not self.dry_run:
+            try:
+                extra = ctypes.c_ulong(0)
+                up = Input(
+                    ctypes.c_ulong(0),
+                    Input_I(mi=MouseInput(0, 0, 0, MOUSEEVENTF_LEFTUP, 0, ctypes.pointer(extra)))
+                )
+                ctypes.windll.user32.SendInput(1, ctypes.pointer(up), ctypes.sizeof(up))
+            except Exception:
+                pass
 
     def is_cursor_visible(self) -> bool:
         """Returns True if Windows mouse cursor is visible."""

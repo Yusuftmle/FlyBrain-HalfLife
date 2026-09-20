@@ -48,6 +48,7 @@ _vizdoom.ini
 
 # FlyBrain Large Media, Recordings, Caches & Scratch
 recordings/
+telemetry_recordings/
 cache/*.npz
 scratch/
 references/
