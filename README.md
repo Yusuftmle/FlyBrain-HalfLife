@@ -261,17 +261,13 @@ OK
 
 ## 🤝 Community & Contributors
 
-A massive thank you to our community contributors who help test, optimize, and expand FlyBrain across diverse game engines and platforms!
+A massive thank you to all contributors who help test, optimize, and expand FlyBrain across diverse game engines and platforms!
 
 <p align="center">
-  <a href="https://github.com/huguitocloud">
-    <img src="https://github.com/huguitocloud.png?size=96" width="96px;" alt="huguitocloud" style="border-radius:50%;" />
-    <br />
-    <b>huguitocloud</b>
+  <a href="https://github.com/Yusuftmle/FlyBrain-HalfLife/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=Yusuftmle/FlyBrain-HalfLife" alt="FlyBrain Contributors" />
   </a>
 </p>
-
-* **[@huguitocloud](https://github.com/huguitocloud)**: Windows `SendInput` driver refactoring, cross-engine testing (Half-Life & GTA Vice City), and the architectural proposal for the `--preset cpu-lite` downscaled connectome.
 
 ---
 
