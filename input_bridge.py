@@ -48,7 +48,7 @@ class InputBridge:
         self,
         turn_threshold: float = 0.03,
         walk_threshold: float = 0.05,
-        attack_threshold: float = 0.35,
+        attack_threshold: float = 0.22,
         press_duration: float = 0.06,
         cooldown_duration: float = 0.08,
         mouse_turn_gain: int = 16,
@@ -89,10 +89,12 @@ class InputBridge:
             mouse_gain_x=110.0,
             mouse_gain_y=40.0,
             walk_threshold=0.02,
-            turn_key_threshold=0.35,
+            turn_key_threshold=0.15,
             turn_deadzone=0.010,
             fire_cooldown=0.35,
-            enable_strafe=False
+            enable_strafe=False,
+            enable_arrow_keys=False,
+            classic_mode=False
         )
         self.reflexes = ReflexManager(input_driver=self.input_driver)
         self._is_escaping_state: bool = False
@@ -188,6 +190,13 @@ class InputBridge:
             return True
         try:
             user32 = ctypes.windll.user32
+            fg = user32.GetForegroundWindow()
+            if not fg:
+                return False
+            # Fast-path: target window already in foreground
+            if self.target_hwnd and self.target_hwnd != 0 and fg == self.target_hwnd:
+                return True
+
             kernel32 = ctypes.windll.kernel32
             try:
                 hinput = user32.OpenInputDesktop(0, False, 0x01FF)
@@ -195,12 +204,6 @@ class InputBridge:
                     user32.SetThreadDesktop(hinput)
             except Exception:
                 pass
-
-            fg = user32.GetForegroundWindow()
-            if not fg:
-                return False
-            if self.target_hwnd and self.target_hwnd != 0 and fg == self.target_hwnd:
-                return True
 
             if self.is_allowed_overlay_or_telemetry(fg):
                 return True
@@ -311,11 +314,11 @@ class InputBridge:
 
     def trigger_obstacle_turn(self, direction: int = 1) -> Dict[str, Any]:
         """Triggers obstacle unstuck saccade through ReflexManager."""
-        turn_dx = 550 * (1 if direction >= 0 else -1)
+        turn_dx = 110 * (1 if direction >= 0 else -1)
         self.is_unstucking = True
         if not self.can_send_input():
             return {"action": "SUPPRESSED (Safety Guard)", "turn_dx": turn_dx}
-        res = self.reflexes.trigger_obstacle_saccade(direction=direction)
+        res = self.reflexes.trigger_obstacle_saccade(direction=direction, flick_pixels=110)
         side = "RIGHT" if direction >= 0 else "LEFT"
         desc = f"OBSTACLE ESCAPE ({side})"
         logger.info(f"🧱 Obstacle deadlock broken: Backed up and 90° Saccade {side}.")
@@ -327,7 +330,7 @@ class InputBridge:
         self.input_driver.mouse_move_relative(dx=flick_dx, dy=0)
         self.input_driver.press_action(ActionKey.BACKWARD)
         self.input_driver.press_action(ActionKey.JUMP)
-        self.input_driver.mouse_click(duration=0.01)
+        self.input_driver.mouse_click(duration=0.05)
         self.last_escape_time = time.time()
         self._is_escaping_state = True
         return {
@@ -340,7 +343,7 @@ class InputBridge:
         """Triggers combat counter-fire, 180 whip turn, and evasion through ReflexManager."""
         if not self.can_send_input():
             return {"action": "SUPPRESSED (Safety Guard)", "is_firing": False}
-        res = self.reflexes.trigger_combat_retaliation(direction=direction, flick_pixels=520)
+        res = self.reflexes.trigger_combat_retaliation(direction=direction, flick_pixels=520, enable_jump=False)
         logger.warning(f"[RETALIATION] Can azaldı: 180° dönüş, karşı ateş açıldı ve kaçış strafe'i yapıldı! (Yön: {direction})")
         return res
 
@@ -348,7 +351,7 @@ class InputBridge:
         """Dispatches an auto-respawn spacebar / click if killed in Half-Life."""
         if not self.can_send_input():
             return
-        self.input_driver.mouse_click(duration=0.01)
+        self.input_driver.mouse_click(duration=0.05)
         self.input_driver.press_action(ActionKey.JUMP)
         time.sleep(0.01)
         self.input_driver.release_action(ActionKey.JUMP)
@@ -364,13 +367,15 @@ class InputBridge:
         vertical_pitch_rate: float = 0.0,
         visual_horizon: Optional[Dict[str, float]] = None,
         glance_pitch: Optional[float] = None,
-        glance_duration: float = 0.4
+        glance_duration: float = 0.4,
+        dnp09_left_rate: float = 0.0,
+        dnp09_right_rate: float = 0.0
     ) -> Dict[str, Any]:
         """
         Decodes descending neuron rates with EMA smoothing and dispatches debounced motor commands.
         """
         now = time.time()
-        dt = max(0.02, min(0.1, now - self._last_step_time))
+        dt = max(0.005, min(0.1, now - self._last_step_time))
         self._last_step_time = now
 
         # 0. Global Safety Guards
@@ -414,18 +419,7 @@ class InputBridge:
             }
 
         # 1. Update Emergency Reflex FSM (Obstacle Saccade / Retaliation override)
-        if self.reflexes.update(now=now):
-            return {
-                "turn_diff": 0.0,
-                "forward_rate": float(dnpe017_forward_rate),
-                "backward_rate": float(mdn_backward_rate),
-                "attack_rate": float(dnpe017_attack_rate),
-                "action": f"EMERGENCY REFLEX ({self.reflexes.current_state})",
-                "is_firing": self.reflexes.current_state == ReflexState.COMBAT_RETALIATION or getattr(self.reflexes.current_state, "name", "") == "COMBAT_RETALIATION",
-                "is_escaping": True,
-                "is_paused": False,
-                "pause_reason": ""
-            }
+        is_reflex_active = self.reflexes.update(now=now)
 
         # 2. DOOMFLY-Inspired Neural Decoding with EMA Low-Pass Filter
         decoded = self.decoder.decode(
@@ -446,11 +440,30 @@ class InputBridge:
             decoded["glance_pitch"] = glance_pitch
             decoded["glance_duration"] = glance_duration
 
+        decoded["is_obstacle_close"] = bool(is_obstacle_close)
+        decoded["dnp09_saccade"] = float(dnp09_right_rate - dnp09_left_rate)
         suppress = (not self.dry_run and not self.can_send_input())
         loco_info = self.locomotion.apply(decoded, now=now, suppress_input=suppress)
 
         if loco_info.get("is_firing", False):
             logger.info(f"🔥 [FIRE] Primary Attack Dispatched: smooth_rate={self.decoder.smooth_attack:.3f}")
+
+        if is_reflex_active:
+            return {
+                "turn_diff": decoded["raw_turn_diff"],
+                "forward_rate": float(dnpe017_forward_rate),
+                "backward_rate": float(mdn_backward_rate),
+                "net_forward": decoded["net_forward"],
+                "attack_rate": float(dnpe017_attack_rate),
+                "action": f"EMERGENCY REFLEX ({self.reflexes.current_state})",
+                "is_firing": self.reflexes.current_state == ReflexState.COMBAT_RETALIATION or getattr(self.reflexes.current_state, "name", "") == "COMBAT_RETALIATION",
+                "is_escaping": True,
+                "is_paused": False,
+                "pause_reason": "",
+                "mouse_dx": int(loco_info.get("mouse_dx", 0)),
+                "mouse_dy": int(loco_info.get("mouse_dy", 0)),
+                "haltere": loco_info.get("haltere", {})
+            }
 
         return {
             "turn_diff": decoded["raw_turn_diff"],
@@ -463,6 +476,8 @@ class InputBridge:
             "is_escaping": False,
             "is_paused": False,
             "pause_reason": "",
+            "mouse_dx": int(loco_info.get("mouse_dx", 0)),
+            "mouse_dy": int(loco_info.get("mouse_dy", 0)),
             "haltere": loco_info.get("haltere", {})
         }
 
