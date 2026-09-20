@@ -78,7 +78,7 @@ class ReinforcementConfig:
 class MotorConfig:
     turn_threshold: float = 0.03       # DNp20 differential steering threshold
     walk_threshold: float = 0.05       # DNpe017 forward walking threshold
-    attack_threshold: float = 0.35     # DNpe017 attack / fire threshold (prevents walking noise fire)
+    attack_threshold: float = 0.22     # DNpe017 attack / fire threshold (fires on target lock or damage)
     press_duration: float = 0.06       # Minimum hardware key hold duration (s)
     cooldown_duration: float = 0.08    # Hardware debounce / refractory cooldown (s)
     dry_run: bool = False              # If True, simulate actions without sending OS keystrokes
@@ -105,4 +105,22 @@ class Config:
     base_dir: str = os.path.dirname(os.path.abspath(__file__))
     cache_dir: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
 
+def apply_preset(cfg: Config, preset: str = "default") -> Config:
+    """Applies high-level operational presets (e.g. cpu-lite for CPU-only systems)."""
+    norm = str(preset).lower().strip()
+    if norm in ["cpu-lite", "lite", "fast"]:
+        cfg.sim.device = "cpu"
+        cfg.vision.grid_width = 30
+        cfg.vision.grid_height = 30
+        cfg.vision.total_ommatidia = 900
+        cfg.connectome.num_photoreceptors = 900
+        cfg.connectome.num_optic_lobe = 1200
+        cfg.connectome.num_central_complex = 300
+        cfg.connectome.num_mushroom_body_kc = 600
+        cfg.connectome.num_mbon = 60
+        cfg.connectome.num_dopaminergic = 30
+        cfg.connectome.num_descending = 80
+    return cfg
+
 DEFAULT_CONFIG = Config()
+

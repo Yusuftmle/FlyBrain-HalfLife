@@ -36,7 +36,7 @@ from telemetry.visualizer import FlyBrainVisualizer
 from telemetry.desktop_audio import DesktopAudioPlayer
 from server.broadcast_server import FlyBrainWebBroadcaster
 from core.connectome import FlyConnectome
-from config import DEFAULT_CONFIG
+from config import DEFAULT_CONFIG, Config, apply_preset
 
 logger = logging.getLogger("FlyBrain.Main")
 if not logger.handlers:
@@ -47,11 +47,20 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 def run_simulation(args):
+    is_lite = (getattr(args, "preset", "default").lower() in ["cpu-lite", "lite"]) or getattr(args, "cpu_lite", False)
+    if is_lite:
+        args.cpu = True
+        if getattr(args, "vis_fps", 30) == 30:
+            args.vis_fps = 15
+
+    sim_cfg = apply_preset(Config(), "cpu-lite" if is_lite else "default")
+
     print("=" * 74)
     print("   FLYBRAIN-HALFLIFE: MaleCNS v1.0 & FlyWire GPU Autonomous Agent")
     print("   Drosophila Melanogaster Connectome Navigation System")
     print("=" * 74)
     print(f"[*] Execution Mode : {args.mode.upper()}")
+    print(f"[*] Preset         : {'CPU-LITE (3,170 Neurons, 30x30 Eye)' if is_lite else 'CANONICAL (12,260 Neurons, 60x60 Eye)'}")
     print(f"[*] Visualizer     : {'ENABLED' if not args.no_vis else 'DISABLED (Headless)'}")
     print(f"[*] Web Broadcaster: {'ENABLED (http://localhost:' + str(args.stream_port) + ')' if getattr(args, 'web_stream', True) else 'DISABLED'}")
     print(f"[*] Hardware Input : {'DRY-RUN (Simulated - Physical Keys Disabled)' if (args.dry_run or args.mode in ['arena', 'doom']) else 'LIVE DIRECTINPUT (PHYSICAL KEYS ACTIVE: W, A, S, D, Mouse)'}")
@@ -61,7 +70,7 @@ def run_simulation(args):
 
     # LAYER 1: Load Biological Connectome and Neurotransmitter Signs
     loader = ConnectomeDataLoader()
-    sparse_weights, meta = loader.build_canonical_flywire_connectome()
+    sparse_weights, meta = loader.build_canonical_flywire_connectome(is_lite=is_lite)
     num_neurons = meta["num_neurons"]
     region_offsets = meta["region_offsets"]
     region_counts = meta["region_counts"]
@@ -94,24 +103,24 @@ def run_simulation(args):
 
     # LAYER 3: Vision Bridge (MSS Sub-2ms Capture & Naka-Rushton Photoreceptors)
     vision_bridge = VisionBridge(
-        grid_width=60, 
-        grid_height=60, 
-        window_title=DEFAULT_CONFIG.vision.capture_window_title
+        grid_width=sim_cfg.vision.grid_width, 
+        grid_height=sim_cfg.vision.grid_height, 
+        window_title=sim_cfg.vision.capture_window_title
     )
 
     # LAYER 4: Input Bridge (DirectInput Hardware Scancodes, Window Lock, & Safety Guard)
     input_bridge = InputBridge(
         turn_threshold=0.03,
         walk_threshold=0.05,
-        attack_threshold=0.35,
+        attack_threshold=DEFAULT_CONFIG.motor.attack_threshold,
         dry_run=args.dry_run or (args.mode in ["arena", "doom"]), 
         cooldown_duration=0.08,
         target_hwnd=vision_bridge.hwnd if args.mode == "live" else None
     )
 
     # Reinforcement Dopamine Circuit & Anti-Stuck State
-    core_connectome = FlyConnectome(DEFAULT_CONFIG.connectome)
-    dopamine = DopamineController(core_connectome, lif_engine, DEFAULT_CONFIG.rl)
+    core_connectome = FlyConnectome(sim_cfg.connectome)
+    dopamine = DopamineController(core_connectome, lif_engine, sim_cfg.rl)
 
     # Mushroom Body (Mantar Cisimciği) Valence & Associative Learning Circuit
     kc_cnt = region_counts.get("mushroom_body_kc", 2400)
@@ -227,14 +236,14 @@ def run_simulation(args):
     was_in_panic = False
     last_frame_time = time.perf_counter()
     last_global_hotkey_time = 0.0
+    last_vis_render_time = 0.0
+    last_broadcast_time = 0.0
     win_styles_applied = False
     # Damage evasion turn memory: after taking damage, persist a strong turn for 1.5s
     damage_escape_dir = 1    # +1 = turn right, -1 = turn left
     last_damage_time = 0.0   # timestamp of last damage event
-    # Obstacle turn direction persistence: flip if one direction doesn't work
-    obs_turn_dir_override = 0    # 0 = no override, +1 = force right, -1 = force left
-    obs_turn_start_time = 0.0   # when current turn direction started
     last_steer_sign = 0          # which way we were steering last frame
+    last_dispatched_mouse_dx = 0 # biological efference copy tracking
     # Virtual Haltere gaze glance timers: periodic vertical exploration without getting stuck looking up
     last_obs_glance_time = 0.0
     last_stuck_glance_time = 0.0
@@ -274,8 +283,8 @@ def run_simulation(args):
             last_shot = getattr(input_bridge, "last_fire_time", 0.0)
             is_damage, red_intensity = vision_bridge.detect_damage_flash(game_frame, last_shot_time=last_shot)
 
-            # 2. Retinal Transduction (HUD-free Central FOV & Naka-Rushton Kinetics)
-            photocurrents, motion_metrics = vision_bridge.process_frame(game_frame)
+            # 2. Retinal Transduction (HUD-free Central FOV & Biological Efference Copy)
+            photocurrents, motion_metrics = vision_bridge.process_frame(game_frame, ego_yaw_dx=last_dispatched_mouse_dx)
 
             # 3. Dopamine Circuit & Combat Retaliation / Obstacle Deadlock Circuit
             if is_damage:
@@ -292,7 +301,6 @@ def run_simulation(args):
                 input_bridge.handle_respawn()
 
             is_obs = bool(motion_metrics.get("is_obstacle_close", False))
-            is_fence = bool(motion_metrics.get("is_fence", False))
             cur_flow = float(motion_metrics.get("flow", 0.0))
             
             # Genuine Spatial Forward Exploration Streak Reinforcement
@@ -300,14 +308,13 @@ def run_simulation(args):
             # 1. Real optical flow above stationary weapon idle breathing (> 0.00060)
             # 2. Genuine forward optical flow expansion (divergence > 0.00008)
             # 3. Active locomotion forward drive (input_bridge.is_walking)
-            # 4. No close frontal obstacles, fences, or damage
+            # 4. No close frontal obstacles or damage
             divergence = float(motion_metrics.get("divergence", 0.0))
             is_genuine_forward = (
                 (cur_flow > 0.00060)
                 and (divergence > 0.00008)
                 and input_bridge.is_walking
                 and (not is_obs)
-                and (not is_fence)
                 and (not is_damage)
             )
             if is_genuine_forward:
@@ -321,7 +328,7 @@ def run_simulation(args):
                     sugar_boost_until = time.time() + 0.40  # 400ms LB3c sweet taste sensation
                     logger.info(f"🌟 [EXPLORATION REWARD] {clean_streak_time:.1f}s Temiz İlerleme! Dopamin + Şeker Ödülü (+{streak_mag:.2f} DA)")
             else:
-                if is_obs or is_fence or is_damage or cur_flow < 0.00045:
+                if is_obs or is_damage or cur_flow < 0.00045:
                     clean_streak_time = 0.0
                     last_streak_reward_time = 0.0
 
@@ -353,9 +360,9 @@ def run_simulation(args):
 
             # Drosophila Optomotor Corridor Centering & Visual Premotor Drive (DNp20 & DNpe017)
             # Compares Left vs Right retinal hemifields + visual depth balance
-            pc_grid = photocurrents.reshape(60, 60)
-            left_eye_drive = float(np.mean(pc_grid[:, :30]))
-            right_eye_drive = float(np.mean(pc_grid[:, 30:]))
+            pc_grid = photocurrents.reshape(vision_bridge.h, vision_bridge.w)
+            left_eye_drive = float(np.mean(pc_grid[:, : vision_bridge.w // 2]))
+            right_eye_drive = float(np.mean(pc_grid[:, vision_bridge.w // 2 :]))
             depth_bal = float(motion_metrics.get("depth_balance", 0.0))
             is_obs = bool(motion_metrics.get("is_obstacle_close", False))
             is_fence = bool(motion_metrics.get("is_fence", False))
@@ -363,35 +370,40 @@ def run_simulation(args):
             # Positive steer_bias (> 0) stimulates DNp20-L (turn left)
             # Negative steer_bias (< 0) stimulates DNp20-R (turn right)
             # depth_bal > 0 means right side is more open -> steer_bias becomes negative -> turn right!
-            retinal_contrast_steer = (left_eye_drive - right_eye_drive) * 0.8
-            depth_steer = -(depth_bal * 95.0)
+            retinal_contrast_steer = (left_eye_drive - right_eye_drive) * 1.2
+            depth_steer = -(depth_bal * 24.0)  # Balanced open corridor centering
             raw_steer_bias = retinal_contrast_steer + depth_steer
-
-            # Obstacle Turn Direction Hysteresis (Minimum 350ms latching to eliminate texture sign-flipping)
-            t_now_s = time.time()
-            if is_obs or is_fence:
-                if obs_turn_dir_override == 0 or (t_now_s - obs_turn_start_time) > 0.35:
-                    obs_turn_dir_override = 1.0 if depth_bal <= 0 else -1.0
-                    obs_turn_start_time = t_now_s
-                raw_steer_bias += obs_turn_dir_override * 32.0
-            else:
-                obs_turn_dir_override = 0
 
             # Mushroom Body Learned Threat Evasion (Avoidance Turn Bias)
             if mb_info.get("is_avoidance_recall", False):
                 raw_steer_bias += mb_info.get("steer_bias", 0.0)
 
-            # Biological Optomotor Low-Pass Damping (Optic Lobe / Haltere time constant ~180ms)
-            # Completely damps closed-loop sensorimotor limit-cycle oscillation
-            filtered_steer_bias += 0.18 * (raw_steer_bias - filtered_steer_bias)
+            # Biological Optomotor Low-Pass Damping (Optic Lobe / Haltere time constant ~120ms)
+            # Alpha 0.28: responsive steering while preventing limit-cycle camera jitter
+            filtered_steer_bias += 0.28 * (raw_steer_bias - filtered_steer_bias)
             final_steer_bias = filtered_steer_bias
 
-            # Responsive DNp20 LIF Stimulus:
-            # Baseline 22.0 keeps membrane just below threshold (-46 mV)
-            # Steer adds responsive drive to turning side with reciprocal inhibition on opposite side
-            base_dnp20 = 22.0
-            dnp20_l_stim = float(np.clip(base_dnp20 + max(0.0, final_steer_bias) * 1.8 - max(0.0, -final_steer_bias) * 0.5, 0.0, 95.0))
-            dnp20_r_stim = float(np.clip(base_dnp20 + max(0.0, -final_steer_bias) * 1.8 - max(0.0, final_steer_bias) * 0.5, 0.0, 95.0))
+            # Responsive DNp20 LIF Stimulus (Channels 1 & 2):
+            # Base 10.0 gives wide dynamic differential headroom
+            base_dnp20 = 10.0
+            dnp20_l_stim = float(np.clip(base_dnp20 + max(0.0, final_steer_bias) * 1.5, 0.0, 95.0))
+            dnp20_r_stim = float(np.clip(base_dnp20 + max(0.0, -final_steer_bias) * 1.5, 0.0, 95.0))
+
+            # Biological DNp09 Evasive Saccade Neurons (Descending Channels 7 & 8)
+            # Rayshubskiy et al. (2020) / Ache et al. (2019): Evasive body saccades triggered by looming obstacles
+            dnp09_l_stim = 0.0
+            dnp09_r_stim = 0.0
+            if is_obs:
+                if depth_bal > 0.02:
+                    dnp09_r_stim = 50.0  # Open corridor on right -> saccade right
+                elif depth_bal < -0.02:
+                    dnp09_l_stim = 50.0  # Open corridor on left -> saccade left
+                else:
+                    # Symmetric wall in front: saccade toward slightly clearer side or alternate
+                    if np.random.rand() > 0.5:
+                        dnp09_r_stim = 50.0
+                    else:
+                        dnp09_l_stim = 50.0
             
             # Continuous Locomotor CPG Forward Drive (DOOMFLY / Drosophila biology)
             # In nature, flies walk forward continuously; obstacles are navigated by steering (DNp20),
@@ -401,21 +413,25 @@ def run_simulation(args):
                 fwd_stim = 0.0
                 mdn_stim = 40.0
                 if damage_escape_dir > 0:
-                    dnp20_r_stim = max(dnp20_r_stim, 70.0)
-                    dnp20_l_stim = 10.0
+                    dnp20_r_stim = max(dnp20_r_stim, 85.0)
+                    dnp20_l_stim = 5.0
+                    dnp09_r_stim = max(dnp09_r_stim, 60.0)
                 else:
-                    dnp20_l_stim = max(dnp20_l_stim, 70.0)
-                    dnp20_r_stim = 10.0
+                    dnp20_l_stim = max(dnp20_l_stim, 85.0)
+                    dnp20_r_stim = 5.0
+                    dnp09_l_stim = max(dnp09_l_stim, 60.0)
             elif is_panic_now:
+                # In panic: stop forward push, let DNp20 rotate out without moonwalking
                 fwd_stim = 0.0
-                mdn_stim = 40.0
+                mdn_stim = 0.0
             else:
-                # Steady, confident forward locomotion (Locomotor CPG)
-                # In sharp turns, slightly ease forward drive so camera pivots tightly around corners
-                if abs(final_steer_bias) > 12.0:
-                    fwd_stim = 18.0
+                # Steady forward locomotion modulated by turning & obstacles
+                if is_obs:
+                    fwd_stim = 4.0   # Slow crawl while executing sharp yaw turn away from obstacle
+                elif abs(final_steer_bias) > 12.0:
+                    fwd_stim = 14.0  # Ease forward speed on corners for tight camera arc
                 else:
-                    fwd_stim = 28.0
+                    fwd_stim = 28.0  # Confident corridor speed
                 mdn_stim = 0.0
 
             # Mushroom Body Valence Modulation on Forward/Backward locomotion
@@ -437,6 +453,8 @@ def run_simulation(args):
             total_ext_current[idx_dnpe017_fwd] += fwd_stim + da_fwd_boost
             total_ext_current[idx_mdn_l] += mdn_stim
             total_ext_current[idx_mdn_r] += mdn_stim
+            total_ext_current[idx_dnp09_l] += dnp09_l_stim
+            total_ext_current[idx_dnp09_r] += dnp09_r_stim
 
             # Mushroom Body 16-D Sensory Scene Projection & Sparse 5% Kenyon Cell Transduction
             mb_feat = mushroom_body.extract_feature_vector(motion_metrics, is_damage=is_damage, red_excess=red_intensity)
@@ -465,6 +483,8 @@ def run_simulation(args):
                     total_ext_current[meta["sugar_indices"]] += sugar_stim
                     sugar_active = True
 
+            # Visual Target Lock & Combat Retaliation Attack Drive (DNpe017-Atk)
+            is_target = bool(motion_metrics.get("is_target_in_crosshair", False))
             if is_damage or in_damage_evasion:
                 # Combat Retaliation: Sustained aggressive counter-attack during evasion window!
                 atk_burst = 70.0 if is_damage else 45.0
@@ -472,28 +492,36 @@ def run_simulation(args):
                 dn_start = region_offsets["descending"]
                 dn_len = min(10, region_counts["descending"])
                 total_ext_current[dn_start : dn_start + dn_len] += 25.0
+            elif is_target:
+                # Predatory Visual Strike: Target locked in central ommatidial crosshair
+                total_ext_current[idx_dnpe017_atk] += 65.0
 
             # 5. Low-Latency Vectorized LIF Forward Pass
-            # 4 substeps (4ms on CUDA) guarantees snappy ~50ms biological reflex propagation without FPS loss
             if getattr(args, "sync_dt", False):
-                num_substeps = max(2, min(6, int(round(dt_frame_ms / max(0.1, lif_engine.dt * 10.0)))))
+                num_substeps = max(2, min(4, int(round(dt_frame_ms / max(0.1, lif_engine.dt * 10.0)))))
             else:
-                num_substeps = 4 if not args.cpu else 2
+                num_substeps = 2 if not args.cpu else 2
 
-            for _ in range(num_substeps):
-                spikes = lif_engine.forward_step(total_ext_current)
+            if hasattr(lif_engine, "forward_substeps"):
+                spikes = lif_engine.forward_substeps(total_ext_current, num_substeps=num_substeps)
+            else:
+                for _ in range(num_substeps):
+                    spikes = lif_engine.forward_step(total_ext_current)
 
-            # 5.5. DOOMFLY 3-Factor Hebbian STDP Learning (KC -> MBON, modulated by PPL1/PAM dopamine)
-            lif_engine.apply_stdp_update(dopamine=dopamine.dopamine_level, eta=0.002)
-            mushroom_body.apply_dopamine_plasticity(dopamine.dopamine_level, escape_dir=damage_escape_dir)
+            # 5.5. DOOMFLY 3-Factor Hebbian STDP Learning (modulated by PPL1/PAM dopamine)
+            if step % 2 == 0:
+                lif_engine.apply_stdp_update(dopamine=dopamine.dopamine_level, eta=0.002)
+                mushroom_body.apply_dopamine_plasticity(dopamine.dopamine_level, escape_dir=damage_escape_dir)
 
-            # 6. Read Motor Firing Rates (DNp20, DNpe017, MDN) & Mushroom Body Valence
+            # 6. Read Motor Firing Rates (DNp20, DNpe017, MDN, DNp09) & Mushroom Body Valence
             rates = lif_engine.get_firing_rates()
             rate_dnp20_l = float(rates[idx_dnp20_l])
             rate_dnp20_r = float(rates[idx_dnp20_r])
             rate_forward = float(rates[idx_dnpe017_fwd])
             rate_attack = float(rates[idx_dnpe017_atk])
             rate_backward = float(rates[idx_mdn_l] + rates[idx_mdn_r]) / 2.0
+            rate_dnp09_l = float(rates[idx_dnp09_l])
+            rate_dnp09_r = float(rates[idx_dnp09_r])
             
             # Compute Mushroom Body net valence and associative memory recall
             mb_info = mushroom_body.compute_valence_and_recall(rates)
@@ -520,13 +548,16 @@ def run_simulation(args):
                 vertical_pitch_rate=0.0,
                 visual_horizon=visual_horizon_data,
                 glance_pitch=glance_req,
-                glance_duration=glance_dur
+                glance_duration=glance_dur,
+                dnp09_left_rate=rate_dnp09_l,
+                dnp09_right_rate=rate_dnp09_r
             )
 
             # Pass controls to next step
             turn_val = -float(motor_info["turn_diff"]) * 2.0
             fwd_val = float(motor_info.get("net_forward", rate_forward - rate_backward)) * 2.5
             is_attack = bool(motor_info["is_firing"])
+            last_dispatched_mouse_dx = int(motor_info.get("mouse_dx", 0))
 
             # 7.5. Live Desktop Audio Playback (PC Speakers / Headphones)
             desktop_audio.play_frame(
@@ -537,8 +568,14 @@ def run_simulation(args):
                 is_damage=bool(is_damage)
             )
 
-            # 8. Render Live Telemetry
-            if visualizer is not None:
+            # 8. Render Live Telemetry (Decoupled GUI refresh for 100+ FPS simulation)
+            vis_target_fps = getattr(args, "vis_fps", 30)
+            vis_interval_s = 1.0 / max(1, vis_target_fps)
+            t_now_s = time.time()
+            should_render_vis = (visualizer is not None) and ((t_now_s - last_vis_render_time) >= vis_interval_s)
+
+            if should_render_vis:
+                last_vis_render_time = t_now_s
                 # 60x60 Drosophila Multispectral Ommatidial Color Viewport
                 if "retina_color_bgr" in motion_metrics and motion_metrics["retina_color_bgr"] is not None:
                     retina_vis = cv2.resize(
@@ -548,8 +585,10 @@ def run_simulation(args):
                     )
                 else:
                     half_pr = len(photocurrents) // 2
-                    left_cur = photocurrents[:half_pr].reshape(60, 30)
-                    right_cur = photocurrents[half_pr:].reshape(60, 30)
+                    gw = vision_bridge.w
+                    gh = vision_bridge.h
+                    left_cur = photocurrents[:half_pr].reshape(gh, gw // 2)
+                    right_cur = photocurrents[half_pr:].reshape(gh, gw // 2)
                     reconstructed = np.hstack([left_cur, right_cur])
                     retina_vis = cv2.resize(
                         cv2.cvtColor((reconstructed * 8.0).clip(0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR),
@@ -590,29 +629,33 @@ def run_simulation(args):
                 elif key == ord('p') or key == ord('P') or key == 32:
                     input_bridge.toggle_pause()
 
-                # Global Hotkeys (Works even when Half-Life has foreground focus!)
-                if sys.platform == "win32":
-                    try:
-                        user32_hk = ctypes.windll.user32
-                        t_now_hk = time.time()
-                        if (t_now_hk - last_global_hotkey_time) > 0.35:
-                            # F8 (0x77): Toggle Lossless MP4 Recording
-                            if user32_hk.GetAsyncKeyState(0x77) & 0x8000:
-                                last_global_hotkey_time = t_now_hk
+            # Global Hotkeys (Works even when Half-Life has foreground focus!)
+            if sys.platform == "win32":
+                try:
+                    user32_hk = ctypes.windll.user32
+                    t_now_hk = time.time()
+                    if (t_now_hk - last_global_hotkey_time) > 0.35:
+                        # F8 (0x77): Toggle Lossless MP4 Recording
+                        if user32_hk.GetAsyncKeyState(0x77) & 0x8000:
+                            last_global_hotkey_time = t_now_hk
+                            if visualizer:
                                 visualizer.toggle_recording()
-                            # F11 (0x7A): Toggle Window Pinned Topmost
-                            elif user32_hk.GetAsyncKeyState(0x7A) & 0x8000:
-                                last_global_hotkey_time = t_now_hk
+                        # F11 (0x7A): Toggle Window Pinned Topmost
+                        elif user32_hk.GetAsyncKeyState(0x7A) & 0x8000:
+                            last_global_hotkey_time = t_now_hk
+                            if visualizer:
                                 visualizer.toggle_topmost("FlyBrain - MaleCNS Connectome Telemetry")
-                            # F6 (0x75): Refocus Half-Life Game Window
-                            elif user32_hk.GetAsyncKeyState(0x75) & 0x8000:
-                                last_global_hotkey_time = t_now_hk
-                                vision_bridge.focus_game_window()
-                    except Exception:
-                        pass
+                        # F6 (0x75): Refocus Half-Life Game Window
+                        elif user32_hk.GetAsyncKeyState(0x75) & 0x8000:
+                            last_global_hotkey_time = t_now_hk
+                            vision_bridge.focus_game_window()
+                except Exception:
+                    pass
 
-            # 8.5. Live Web Broadcaster Update (MJPEG Stream & Biological Telemetry)
-            if broadcaster and broadcaster.is_running:
+            # 8.5. Live Web Broadcaster Update (Decoupled at 25 FPS)
+            should_broadcast = (broadcaster and broadcaster.is_running) and ((t_now_s - last_broadcast_time) >= 1.0 / 25.0)
+            if should_broadcast:
+                last_broadcast_time = t_now_s
                 fps_instant = 1000.0 / max(1.0, dt_frame_ms)
                 plasticity_stats = lif_engine.get_plasticity_telemetry()
                 if getattr(lif_engine, "is_flatlined", False):
@@ -763,6 +806,9 @@ if __name__ == "__main__":
     parser.add_argument("--web-stream", action="store_true", default=True, help="Enable live web broadcaster on port 8766")
     parser.add_argument("--no-web-stream", dest="web_stream", action="store_false", help="Disable live web broadcaster")
     parser.add_argument("--stream-port", type=int, default=8766, help="Port for live web broadcaster (default: 8766)")
+    parser.add_argument("--preset", choices=["default", "cpu-lite"], default="default", help="Operational preset: default (canonical 12,260 neurons) or cpu-lite (3,170 neurons, 30x30 eye, high CPU FPS)")
+    parser.add_argument("--cpu-lite", dest="cpu_lite", action="store_true", help="Shortcut for --preset cpu-lite")
+    parser.add_argument("--vis-fps", type=int, default=30, help="Visualizer HUD refresh rate in FPS (default: 30, leaves full headroom for 100+ FPS simulation)")
     
     args = parser.parse_args()
     run_simulation(args)
