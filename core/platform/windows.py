@@ -98,6 +98,7 @@ WIN_SCANCODES = {
     ActionKey.TURN_RIGHT: 0xCD,     # DIK_RIGHT
     ActionKey.JUMP: 0x39,           # DIK_SPACE
     ActionKey.CROUCH: 0x1D,         # DIK_LCONTROL
+    ActionKey.FIRE: 0x1C,           # DIK_RETURN / Enter (Half-Life native secondary primary attack)
     ActionKey.QUICKLOAD: 0x78       # VK_F9
 }
 
@@ -199,30 +200,56 @@ class WindowsScreenCapture(BaseScreenCapture):
                             kernel32.CloseHandle(hProc)
 
             # 3. Direct Enumeration of visible windows matching process names
+            # Robust EnumWindows handling contributed by @huguitocloud (Issue #10)
             found = None
+            WND = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+
             def enum_cb(h, _):
                 nonlocal found
-                if user32.IsWindowVisible(h):
+                try:
+                    if not user32.IsWindowVisible(h):
+                        return True
+
                     pid = ctypes.wintypes.DWORD()
                     user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
-                    hProc = kernel32.OpenProcess(0x1000, False, pid.value)
-                    if hProc:
-                        buf = ctypes.create_unicode_buffer(1024)
-                        sz = ctypes.wintypes.DWORD(1024)
-                        if kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(sz)):
-                            pname = buf.value.lower()
-                            if any(k in pname for k in process_names):
-                                rect = ctypes.wintypes.RECT()
-                                user32.GetWindowRect(h, ctypes.byref(rect))
-                                if (rect.right - rect.left) >= 100 and (rect.bottom - rect.top) >= 100:
-                                    found = h
-                                    kernel32.CloseHandle(hProc)
-                                    return False
-                        kernel32.CloseHandle(hProc)
-                return True
+                    if not pid.value:
+                        return True
 
-            WND = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
-            user32.EnumWindows(WND(enum_cb), 0)
+                    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                    hProc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+                    if not hProc:
+                        return True
+
+                    try:
+                        buf = ctypes.create_unicode_buffer(1024)
+                        sz = ctypes.wintypes.DWORD(len(buf))
+                        if not kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(sz)):
+                            return True
+
+                        pname = buf.value.lower()
+                        if not any(k.lower() in pname for k in process_names):
+                            return True
+
+                        rect = ctypes.wintypes.RECT()
+                        if not user32.GetWindowRect(h, ctypes.byref(rect)):
+                            return True
+
+                        width = rect.right - rect.left
+                        height = rect.bottom - rect.top
+                        if width >= 100 and height >= 100:
+                            found = h
+                            return False  # Stop enumeration
+                        return True
+                    finally:
+                        kernel32.CloseHandle(hProc)
+                except Exception as ex:
+                    # Prevent exceptions from escaping ctypes C callback boundary
+                    logger.debug(f"WindowsCapture: Exception enumerating HWND {h}: {ex}")
+                    return True
+
+            # Keep callback reference alive during EnumWindows invocation
+            cb_ref = WND(enum_cb)
+            user32.EnumWindows(cb_ref, 0)
             if found:
                 self.hwnd = found
                 logger.info(f"WindowsCapture: Attached via process scan (HWND: {found})")
@@ -486,6 +513,7 @@ class WindowsInputDriver(BaseInputDriver):
             ii_.ki = KeyBdInput(0, scancode, KEYEVENTF_SCANCODE, 0, ctypes.pointer(extra))
             x = Input(ctypes.c_ulong(1), ii_)
             ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
+            ctypes.windll.user32.keybd_event(0, scancode, KEYEVENTF_SCANCODE, 0)
         except Exception:
             pass
 
@@ -505,35 +533,44 @@ class WindowsInputDriver(BaseInputDriver):
             ii_.ki = KeyBdInput(0, scancode, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0, ctypes.pointer(extra))
             x = Input(ctypes.c_ulong(1), ii_)
             ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
+            ctypes.windll.user32.keybd_event(0, scancode, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
         except Exception:
             pass
 
     def mouse_click(self, duration: float = 0.05):
-        """Sends a complete primary mouse click (Fire weapon) via Win32 SendInput."""
+        """Sends a complete primary attack (Fire weapon) via DirectInput ENTER scancode and mouse event."""
         if self.dry_run:
             return
         extra = ctypes.c_ulong(0)
         try:
-            # Mouse button down
-            down = Input(
-                ctypes.c_ulong(0),
-                Input_I(mi=MouseInput(0, 0, 0, MOUSEEVENTF_LEFTDOWN, 0, ctypes.pointer(extra)))
-            )
-            sent = ctypes.windll.user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(Input))
-            if sent != 1:
-                raise ctypes.WinError()
+            # 1. Primary path: DirectInput ENTER scancode (0x1C) - Native Half-Life +attack
+            ctypes.windll.user32.keybd_event(0, 0x1C, KEYEVENTF_SCANCODE, 0)
+            # 2. Secondary path: Mouse left down
+            ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+
+            try:
+                ii_k = Input_I(ki=KeyBdInput(0, 0x1C, KEYEVENTF_SCANCODE, 0, ctypes.pointer(extra)))
+                x_k = Input(ctypes.c_ulong(1), ii_k)
+                down_m = Input(ctypes.c_ulong(0), Input_I(mi=MouseInput(0, 0, 0, MOUSEEVENTF_LEFTDOWN, 0, ctypes.pointer(extra))))
+                inputs_down = (Input * 2)(x_k, down_m)
+                ctypes.windll.user32.SendInput(2, inputs_down, ctypes.sizeof(Input))
+            except Exception:
+                pass
 
             if duration > 0:
                 time.sleep(duration)
 
-            # Mouse button up
-            up = Input(
-                ctypes.c_ulong(0),
-                Input_I(mi=MouseInput(0, 0, 0, MOUSEEVENTF_LEFTUP, 0, ctypes.pointer(extra)))
-            )
-            sent = ctypes.windll.user32.SendInput(1, ctypes.byref(up), ctypes.sizeof(Input))
-            if sent != 1:
-                raise ctypes.WinError()
+            # 3. Release ENTER and mouse
+            ctypes.windll.user32.keybd_event(0, 0x1C, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+            ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            try:
+                ii_k_up = Input_I(ki=KeyBdInput(0, 0x1C, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0, ctypes.pointer(extra)))
+                x_k_up = Input(ctypes.c_ulong(1), ii_k_up)
+                up_m = Input(ctypes.c_ulong(0), Input_I(mi=MouseInput(0, 0, 0, MOUSEEVENTF_LEFTUP, 0, ctypes.pointer(extra))))
+                inputs_up = (Input * 2)(x_k_up, up_m)
+                ctypes.windll.user32.SendInput(2, inputs_up, ctypes.sizeof(Input))
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"WindowsInputDriver.mouse_click failed: {e}")
 
@@ -557,6 +594,8 @@ class WindowsInputDriver(BaseInputDriver):
         self.active_actions.clear()
         if not self.dry_run:
             try:
+                ctypes.windll.user32.keybd_event(0, 0x1C, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+                ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                 extra = ctypes.c_ulong(0)
                 up = Input(
                     ctypes.c_ulong(0),
