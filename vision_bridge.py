@@ -34,7 +34,10 @@ class VisionBridge:
         window_title: str = "Half-Life",
         i_max: float = 28.0,
         semi_saturation: float = 0.35,
-        hill_exponent: float = 1.25
+        hill_exponent: float = 1.25,
+        damage_flash_threshold: float = 0.028,
+        damage_max_consecutive_frames: int = 6,
+        damage_flash_cooldown_frames: int = 12
     ):
         self.w: int = grid_width
         self.h: int = grid_height
@@ -45,6 +48,11 @@ class VisionBridge:
         self.i_max: float = i_max
         self.sigma_semi: float = semi_saturation
         self.n_hill: float = hill_exponent
+
+        # Damage Detection Configuration (Issue #11 by @huguitocloud)
+        self.damage_flash_threshold: float = damage_flash_threshold
+        self.damage_max_consecutive_frames: int = damage_max_consecutive_frames
+        self.damage_flash_cooldown_frames: int = damage_flash_cooldown_frames
         
         # Platform Screen Capture Driver (Windows GDI/MSS or Linux X11/MSS)
         self.capture_driver = get_screen_capture_driver(target_title=window_title)
@@ -68,7 +76,12 @@ class VisionBridge:
         
         # Drosophila Lamina Local Contrast Adaptation (Weber-Fechner / CLAHE for shadow enhancement)
         self.clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(6, 6))
-        
+
+        # Loading Screen & Blackout Guard State
+        self.is_loading_screen: bool = False
+        self.loading_screen_frames: int = 0
+        self.last_loading_exit_time: float = 0.0
+
         logger.info(f"VisionBridge initialized: {self.w}x{self.h} grid ({self.total_ommatidia} ommatidia).")
 
     @property
@@ -255,6 +268,12 @@ class VisionBridge:
         stim_vis = np.clip(stimulus * 255.0, 0, 255).astype(np.uint8)
         retina_gray_bgr = cv2.cvtColor(stim_vis, cv2.COLOR_GRAY2BGR)
         half_w = self.w // 2
+
+        # Drosophila Innate Phototaxis: Weber-Fechner Ambient Luminance Asymmetry
+        left_raw_lum = float(np.mean(raw_gray[:, :half_w]))
+        right_raw_lum = float(np.mean(raw_gray[:, half_w:]))
+        ambient_luminance = float((left_raw_lum + right_raw_lum) * 0.5)
+        phototaxis_asymmetry = float((right_raw_lum - left_raw_lum) / (right_raw_lum + left_raw_lum + 1e-4))
         
         # 5.1 Drosophila Optomotor Corridor Centering & Wall Avoidance Reflex
         left_eye = gray[:, :self.w // 2]
@@ -314,9 +333,9 @@ class VisionBridge:
         # Efference copy: subtract ego-motion optical flow from center patch
         relative_center_motion = ch_motion - (flow_mag * 1.25)
         
-        # Target locked ONLY if an independent moving entity or distinct high-contrast enemy model is in crosshair
+        # Target locked ONLY if an independent moving entity is in crosshair (prevents shooting static lamps/signs)
         is_target_in_crosshair = bool(
-            not is_obstacle_close and ((relative_center_motion > 0.18 and ch_edges > 0.28) or ch_r8 > 0.30)
+            not is_obstacle_close and relative_center_motion > 0.15 and (ch_edges > 0.22 or ch_r8 > 0.25)
         )
 
         # 6. Biophysical Naka-Rushton Photoreceptor Transduction
@@ -393,9 +412,14 @@ class VisionBridge:
             "mean_photocurrent": float(np.mean(photoreceptor_currents)),
             "left_eye_current": float(np.mean(left_currents)),
             "right_eye_current": float(np.mean(right_currents)),
+            "phototaxis_asymmetry": float(phototaxis_asymmetry),
+            "ambient_luminance": float(ambient_luminance),
+            "left_raw_lum": float(left_raw_lum),
+            "right_raw_lum": float(right_raw_lum),
             "left_eye_bgr": retina_multispectral[:, :half_w].copy(),
             "right_eye_bgr": retina_multispectral[:, half_w:].copy(),
-            "retina_color_bgr": retina_multispectral
+            "retina_color_bgr": retina_multispectral,
+            "is_loading_screen": bool(self.is_loading_screen)
         }
 
         return photoreceptor_currents, metrics
@@ -521,10 +545,10 @@ class VisionBridge:
             b_c = small[:, :, 0]
             r_excess = np.clip(r_c - 0.5 * (g_c + b_c), 0.0, 1.0)
             mean_r_excess = float(np.mean(r_excess))
-            high_red_fraction = float(np.mean(r_excess > 0.06))
+            high_red_fraction = float(np.mean(r_excess > 0.045))
 
             # Temporal persistence:
-            if mean_r_excess > 0.06:
+            if mean_r_excess > 0.03:
                 self.consecutive_red_frames += 1
             else:
                 self.consecutive_red_frames = 0
@@ -537,26 +561,59 @@ class VisionBridge:
                 self.red_baseline = 0.90 * self.red_baseline + 0.10 * mean_r_excess
 
             # Half-Life damage flash criteria:
-            # 1. Not during fly's own immediate muzzle flash (<120ms)
-            # 2. Sharp onset delta spike in red (delta_red > threshold)
-            # 3. Sufficient red coverage across central FOV (high_red_fraction > 0.10)
-            # 4. Border or overall pervasive redness (border_r_excess > 0.012 or delta_red > 0.08)
-            # 5. Onset window (consecutive_red_frames <= 6 frames at 60-100 FPS)
-            if (not is_own_fire
-                    and delta_red > threshold
-                    and high_red_fraction > 0.10
-                    and (border_r_excess > 0.012 or delta_red > 0.08)
-                    and self.consecutive_red_frames <= 6):
-                is_damage = True
+            # 1. Not during fly's own immediate muzzle flash (<150ms)
+            # 2. Rejects pinpoint RPG laser dots (<0.04 coverage)
+            # 3. Requires genuine temporal onset spike above baseline,
+            #    preventing static reddish textures (rust, bricks, crates) from falsely triggering damage!
+            # 4. Onset window (consecutive_red_frames <= damage_max_consecutive_frames)
+            # (Configurable via Issue #11 by @huguitocloud)
+            thresh = threshold if threshold != 0.05 else self.damage_flash_threshold
+            if not is_own_fire and self.consecutive_red_frames <= self.damage_max_consecutive_frames:
+                if delta_red > thresh and high_red_fraction > 0.05 and (border_r_excess > 0.008 or delta_red > (thresh * 2.0)):
+                    is_damage = True
 
         if is_damage and (self.damage_flash_cooldown == 0):
-            self.damage_flash_cooldown = 15  # Debounce
+            self.damage_flash_cooldown = self.damage_flash_cooldown_frames  # Debounce
             logger.warning(
                 f"🚨 Damage detected! Red delta: {delta_red:.3f} (mean: {mean_r_excess:.3f}, border: {border_r_excess:.3f}, coverage: {high_red_fraction:.2f})"
             )
             return True, float(max(delta_red, 0.25))
             
         return False, float(max(delta_red, 0.0))
+
+    def detect_loading_screen(self, frame_bgr: np.ndarray) -> bool:
+        """
+        Detects GoldSrc map change loading screen or level transition blackout.
+        Prevents fly from executing erratic obstacle saccades while level loads.
+        Returns True if in loading screen/blackout.
+        """
+        if frame_bgr is None or frame_bgr.size == 0:
+            return False
+
+        mean_lum = float(np.mean(frame_bgr))
+        var_lum = float(np.var(frame_bgr))
+
+        # Blackout: pitch black (< 5.5 intensity)
+        # Static Loading Screen: extremely low variance and low brightness
+        is_dark_or_static = (mean_lum < 5.5) or (var_lum < 6.0 and mean_lum < 35.0)
+
+        if is_dark_or_static:
+            self.loading_screen_frames += 1
+            if self.loading_screen_frames >= 3:
+                self.is_loading_screen = True
+        else:
+            if self.is_loading_screen:
+                # Transitioning out of loading screen -> recover focus!
+                self.is_loading_screen = False
+                self.last_loading_exit_time = time.time()
+                logger.info("🗺️ Level loaded! Game recovered from loading screen.")
+                try:
+                    self.focus_game_window()
+                except Exception:
+                    pass
+            self.loading_screen_frames = 0
+
+        return self.is_loading_screen
 
     def close(self):
         """Releases MSS screen resources."""

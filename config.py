@@ -34,11 +34,15 @@ class VisionConfig:
     fps_target: int = 30               # Target screen capture and processing FPS
     capture_window_title: str = "Half-Life" # Window title to capture
     
-    # Adaptive Gain Control (AGC) - Prevents silence and saturation
     use_agc: bool = True               # Enable AGC
     target_current_mean: float = 12.0  # Target average photoreceptor current (nA)
     target_current_max: float = 28.0   # Saturation current ceiling (nA)
     agc_adaptation_rate: float = 0.05  # AGC adaptation rate
+
+    # Damage Flash Detection Parameters (Configurable via Issue #11 by @huguitocloud)
+    damage_flash_threshold: float = 0.028      # Temporal red delta spike threshold to trigger damage
+    damage_max_consecutive_frames: int = 6     # Maximum onset consecutive red frames allowed for damage flash
+    damage_flash_cooldown: int = 12            # Debounce frame cooldown (~350ms)
 
 @dataclass
 class ConnectomeConfig:
